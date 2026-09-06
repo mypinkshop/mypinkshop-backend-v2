@@ -46,7 +46,7 @@ ads.get('/public/banners', async (c) => {
 ads.get('/public/sponsored-products', async (c) => {
   try {
     const url = new URL(c.req.url);
-    const limit = parseInt(url.searchParams.get('limit') || '4', 10);
+    let limit = parseInt(url.searchParams.get('limit') || '4', 10);
     if (limit > 20) limit = 20;
 
     // Is query mein hum sponsored products select karte hain
