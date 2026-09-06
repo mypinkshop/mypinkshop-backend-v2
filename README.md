@@ -112,4 +112,4 @@ admin account.
   marked `// TODO:` — fill these in with your provider's SDK/API before
   taking real payments.
 - CORS currently allows `origin: '*'` for ease of setup — restrict this to
-  your storefront's domain(s) before going to production.
+  your storefront's domain(s) before going to production..
