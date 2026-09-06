@@ -1,7 +1,7 @@
-# myjinkshop API
+# mypinkshop API
 
-Cloudflare Workers backend for the myjinkshop e-commerce platform, built with
-[Hono](https://hono.dev) and [Cloudflare D1](https://developers.cloudflare.com/d1/).
+Cloudflare Workers backend for the mypinkshop e-commerce platform, built with
+[Hono](https://hono.dev) .
 
 ## Stack
 
@@ -44,7 +44,7 @@ wrangler.toml        Workers config (update database_id after creating your D1 D
 2. **Create your D1 database**
 
    ```bash
-   npx wrangler d1 create myjinkshop-db
+   npx wrangler d1 create mypinkshop-db
    ```
 
    Copy the `database_id` it prints into `wrangler.toml`, replacing
