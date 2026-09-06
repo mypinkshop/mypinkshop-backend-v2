@@ -41,7 +41,7 @@ app.use(
 app.get('/', (c) =>
   c.json({
     success: true,
-    message: 'myjinkshop API is running.',
+    message: 'Mypinkinkshop API is running.',
     time: new Date().toISOString(),
   })
 );
