@@ -15,7 +15,7 @@ const sendEmail = async (c, to, subject, html) => {
     const { SMTP_USER, SMTP_PASS } = c.env;
     
     // ✅ SAHI API Endpoint (v2 removed, ye naya hai)
-    const response = await fetch('https://api.sender.net/emails', {
+    const response = await fetch('https://api.sender.net/v2/emails', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${SMTP_PASS}`,
