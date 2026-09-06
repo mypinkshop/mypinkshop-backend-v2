@@ -163,6 +163,18 @@ orders.get('/:id', authMiddleware, async (c) => {
 /* Admin                                                                  */
 /* --------------------------------------------------------------------- */
 
+// GET /api/orders/all - List ALL orders for Admin Dashboard
+orders.get('/all', authMiddleware, requireAdmin, async (c) => {
+  try {
+    const { results } = await c.env.DB.prepare(
+      'SELECT * FROM orders ORDER BY created_at DESC'
+    ).all();
+    return ok(c, results || []);
+  } catch (err) {
+    return fail(c, `Failed to load all orders: ${err.message}`, 500);
+  }
+});
+
 // GET /api/orders  - list all orders (admin)
 orders.get('/', authMiddleware, requireAdmin, async (c) => {
   try {
