@@ -9,3 +9,4 @@ database_id = "00343abb-2eb1-4010-84a5-f5608523de3d"
 
 [vars]
 FRONTEND_URL = "https://mypinkshop.com"
+JWT_SECRET = "YbSNEP0omcxXSjCNQM6hCfnr0zwrpZhZElZgZdONQqI"
