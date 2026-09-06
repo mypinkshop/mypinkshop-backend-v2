@@ -46,13 +46,26 @@ app.get('/', (c) =>
   })
 );
 
-app.get('/api/health', (c) =>
-  c.json({
-    success: true,
-    status: 'ok',
-    time: new Date().toISOString(),
-  })
-);
+// ✅ Updated health check with D1 database connection check
+app.get('/api/health', async (c) => {
+  try {
+    // Check D1 connection
+    await c.env.DB.prepare('SELECT 1').run();
+    return c.json({
+      success: true,
+      status: 'ok',
+      database: 'connected',
+      time: new Date().toISOString()
+    });
+  } catch (error) {
+    return c.json({
+      success: true,
+      status: 'ok',
+      database: 'error',
+      time: new Date().toISOString()
+    });
+  }
+});
 
 /* --------------------------------------------------------------------- */
 /* Route mounting                                                         */
