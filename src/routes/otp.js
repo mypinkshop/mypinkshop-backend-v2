@@ -9,12 +9,12 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// ✅ Send email using SENDER.NET API (Working Endpoint)
+// ✅ Send email using SENDER.NET API (Correct Endpoint + Template ID)
 const sendEmail = async (c, to, subject, html) => {
   try {
     const { SMTP_USER, SMTP_PASS } = c.env;
     
-    // ✅ SAHI API Endpoint (v2 removed, ye naya hai)
+    // ✅ Correct Endpoint
     const response = await fetch('https://api.sender.net/v2/emails', {
       method: 'POST',
       headers: {
@@ -25,7 +25,7 @@ const sendEmail = async (c, to, subject, html) => {
         from: { email: 'noreply@mypinkshop.com', name: 'MyPinkShop' },
         to: [{ email: to }],
         subject: subject,
-        html: html,
+        template_id: 'ejvA04', // ✅ Yahan Template ID daalo
       }),
     });
     
@@ -67,18 +67,9 @@ otp.post('/send', async (c) => {
       .bind(id, email.toLowerCase().trim(), otpCode, expiresAt)
       .run();
     
-    // ✅ Send email
-    const emailHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <h2 style="color: #ec4899;">MyPinkShop</h2>
-        <p>Your OTP is:</p>
-        <h1 style="font-size: 48px; letter-spacing: 10px; color: #ec4899;">${otpCode}</h1>
-        <p>This OTP is valid for 10 minutes.</p>
-      </div>
-    `;
-    
-    const emailResult = await sendEmail(c, email.toLowerCase().trim(), 'Your MyPinkShop OTP', emailHtml);
-    
+    // ✅ Send email (Template ID ke saath)
+    const emailResult = await sendEmail(c, email.toLowerCase().trim(), 'Your MyPinkShop OTP', '');
+
     if (!emailResult || !emailResult.ok) {
       console.log('⚠️ Email failed, but OTP is:', otpCode);
     }
@@ -171,18 +162,9 @@ otp.post('/resend', async (c) => {
       .bind(id, email.toLowerCase().trim(), otpCode, expiresAt)
       .run();
     
-    // ✅ Send email
-    const emailHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <h2 style="color: #ec4899;">MyPinkShop</h2>
-        <p>Your OTP is:</p>
-        <h1 style="font-size: 48px; letter-spacing: 10px; color: #ec4899;">${otpCode}</h1>
-        <p>This OTP is valid for 10 minutes.</p>
-      </div>
-    `;
-    
-    const emailResult = await sendEmail(c, email.toLowerCase().trim(), 'Your MyPinkShop OTP', emailHtml);
-    
+    // ✅ Send email (Template ID ke saath)
+    const emailResult = await sendEmail(c, email.toLowerCase().trim(), 'Your MyPinkShop OTP', '');
+
     if (!emailResult || !emailResult.ok) {
       console.log('⚠️ Email failed, but OTP is:', otpCode);
     }
