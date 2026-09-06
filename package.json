@@ -1,0 +1,21 @@
+{
+  "name": "myjinkshop",
+  "version": "1.0.0",
+  "description": "Cloudflare Workers backend for myjinkshop, built with Hono + D1.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "db:create": "wrangler d1 create myjinkshop-db",
+    "db:migrate:local": "wrangler d1 execute myjinkshop-db --local --file=schema.sql",
+    "db:migrate:remote": "wrangler d1 execute myjinkshop-db --remote --file=schema.sql"
+  },
+  "dependencies": {
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  }
+}
