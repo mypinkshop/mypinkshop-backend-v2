@@ -11,6 +11,71 @@ const VALID_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancell
 /* Customer                                                               */
 /* --------------------------------------------------------------------- */
 
+// ✅ POST /api/orders - Create new order (Frontend Checkout.js isko hit karta hai)
+orders.post('/', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    
+    // Validation
+    if (!body.items || !Array.isArray(body.items) || body.items.length === 0) {
+      return fail(c, 'items must be a non-empty array.', 400);
+    }
+    if (!body.address) {
+      return fail(c, 'address is required.', 400);
+    }
+
+    const id = genId('order');
+    const orderNumber = genOrderNumber();
+    
+    // Calculate totals
+    let subtotal = 0;
+    for (const item of body.items) {
+      subtotal += (item.price || 0) * (item.quantity || 1);
+    }
+    
+    const taxAmount = Math.round(subtotal * 0.05 * 100) / 100;
+    const shippingAmount = subtotal >= 499 ? 0 : 49;
+    const totalAmount = subtotal + taxAmount + shippingAmount;
+
+    // ✅ Order Insert
+    await c.env.DB.prepare(
+      `INSERT INTO orders 
+        (id, user_id, order_number, status, subtotal, tax_amount, shipping_amount, discount_amount,
+         total_amount, payment_status, payment_method, shipping_address, created_at, updated_at)
+       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
+    )
+      .bind(
+        id,
+        body.userId || null,
+        orderNumber,
+        subtotal,
+        taxAmount,
+        shippingAmount,
+        body.discount || 0,
+        totalAmount,
+        body.paymentMethod || 'cod',
+        JSON.stringify(body.address)
+      )
+      .run();
+
+    // ✅ Order Items Insert
+    for (const item of body.items) {
+      const itemId = genId('oi');
+      await c.env.DB.prepare(
+        `INSERT INTO order_items (id, order_id, product_id, product_name, price, quantity, subtotal)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+        .bind(itemId, id, item.productId || item.id, item.name || 'Product', item.price || 0, item.quantity || 1, (item.price || 0) * (item.quantity || 1))
+        .run();
+    }
+
+    const order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    return ok(c, { order, orderId: id, orderNumber }, undefined, 201);
+  } catch (err) {
+    return fail(c, `Failed to create order: ${err.message}`, 500);
+  }
+});
+
 // POST /api/orders/create
 orders.post('/create', authMiddleware, async (c) => {
   try {
