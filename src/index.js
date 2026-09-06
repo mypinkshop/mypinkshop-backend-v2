@@ -20,6 +20,7 @@ import adminRoutes from './routes/admin.js'; // ⬅️ Yeh import add kiya
 import notificationRoutes from './routes/notifications.js'; // ⬅️ Yeh import add kiya
 import uploadRoutes from './routes/upload.js';
 import couponRoutes from './routes/coupons.js';
+import shippingRoutes from './routes/shipping.js';
 
 
 
@@ -94,6 +95,7 @@ app.route('/api/admin', adminRoutes); // ⬅️ Yeh mount add kiya
 app.route('/api/notifications', notificationRoutes); // ⬅️ Yeh mount add kiya
 app.route('/api/upload', uploadRoutes);
 app.route('/api/coupons', couponRoutes);
+app.route('/api/shipping', shippingRoutes);
 
 /* --------------------------------------------------------------------- */
 /* 404 + global error handling                                            */
