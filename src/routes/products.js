@@ -13,6 +13,13 @@ function serializeProduct(row) {
     aboutThisItem: safeJsonArray(row.about_this_item),
     isActive: !!row.is_active,
     isFeatured: !!row.is_featured,
+    // ✅ Frontend compatibility ke liye ye fields add karo
+    status: row.is_active ? 'active' : 'inactive',
+    is_active: row.is_active,
+    category: row.main_category,
+    mainCategory: row.main_category,
+    subcategory: row.sub_category,
+    subCategory: row.sub_category,
   };
 }
 
