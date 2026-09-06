@@ -17,7 +17,7 @@ const sendEmail = async (c, to, subject, html) => {
       return { ok: false, error: 'SENDER_API_KEY is missing' };
     }
 
-    // ✅ YAHI ENDPOINT HAI (v2/emails)
+    // ✅ YAHI ENDPOINT HAI (v2/emails, NOT v2/emails/send)
     const response = await fetch('https://api.sender.net/v2/emails', {
       method: 'POST',
       headers: {
@@ -88,24 +88,24 @@ otp.post('/send', async (c) => {
   }
 });
 
-// ✅ POST /api/otp/verify (FIXED)
+// ✅ POST /api/otp/verify
 otp.post('/verify', async (c) => {
   try {
     const { email, otp } = await c.req.json().catch(() => ({}));
     if (!email || !otp) return fail(c, 'Email and OTP are required.', 400);
     
+    // ✅ Strict match: String ko String se compare karo
     const cleanEmail = String(email).toLowerCase().trim();
     const cleanOtp = String(otp).trim(); 
     
-    // ✅ Find OTP record (Verified ya Unverified dono check karo)
     const otpRecord = await c.env.DB.prepare(
-      'SELECT * FROM otp_verifications WHERE email = ? AND otp_code = ?'
+      'SELECT * FROM otp_verifications WHERE email = ? AND otp_code = ? AND is_verified = 0'
     ).bind(cleanEmail, cleanOtp).first();
     
     if (!otpRecord) return fail(c, 'Invalid OTP.', 400);
     
-    // ✅ 10 minute ka buffer do expiry ke liye
-    if (new Date(otpRecord.expires_at) < new Date(Date.now() - 10 * 60 * 1000)) {
+    // ✅ 5 minute ka buffer do expiry ke liye
+    if (new Date(otpRecord.expires_at) < new Date(Date.now() - 5 * 60 * 1000)) {
       await c.env.DB.prepare('DELETE FROM otp_verifications WHERE id = ?').bind(otpRecord.id).run();
       return fail(c, 'OTP expired.', 400);
     }
