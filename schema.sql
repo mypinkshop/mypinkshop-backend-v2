@@ -1,8 +1,8 @@
 -- schema.sql
 -- Cloudflare D1 (SQLite) schema for myjinkshop.
 -- Apply with:
---   wrangler d1 execute myjinkshop-db --local --file=schema.sql
---   wrangler d1 execute myjinkshop-db --remote --file=schema.sql
+--   wrangler d1 execute mypinkshop-db --local --file=schema.sql
+--   wrangler d1 execute mypinkshop-db --remote --file=schema.sql
 
 PRAGMA foreign_keys = ON;
 
