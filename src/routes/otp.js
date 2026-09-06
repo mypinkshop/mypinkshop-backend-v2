@@ -8,7 +8,6 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// ✅ MailChannels API (No API keys required, uses Cloudflare native routing)
 const sendEmail = async (c, to, subject, html) => {
   try {
     const response = await fetch('https://api.mailchannels.net/tx/v1/send', {
@@ -26,25 +25,29 @@ const sendEmail = async (c, to, subject, html) => {
     
     if (!response.ok) {
       const errorText = await response.text();
-      return { ok: false, error: errorText };
+      return { ok: false, error: `MailChannels Error: ${errorText}` };
     }
     
     return { ok: true };
   } catch (error) {
-    return { ok: false, error: error.message };
+    return { ok: false, error: `Fetch Exception: ${error.message}` };
   }
 };
 
 // ✅ POST /api/otp/send
 otp.post('/send', async (c) => {
   try {
-    const { email } = await c.req.json().catch(() => ({}));
+    const body = await c.req.json().catch(() => ({}));
+    const { email } = body;
+    
     if (!email) return fail(c, 'Email is required.', 400);
     
     const cleanEmail = String(email).toLowerCase().trim();
     
     const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
-    if (existingUser) return fail(c, 'Account exists. Please login.', 409);
+    if (existingUser) {
+      return c.json({ success: false, exists: true, error: 'Account already exists. Please login.' }, 409);
+    }
     
     await c.env.DB.prepare('DELETE FROM otp_verifications WHERE email = ?').bind(cleanEmail).run();
     
@@ -77,7 +80,9 @@ otp.post('/send', async (c) => {
 // ✅ POST /api/otp/verify
 otp.post('/verify', async (c) => {
   try {
-    const { email, otp } = await c.req.json().catch(() => ({}));
+    const body = await c.req.json().catch(() => ({}));
+    const { email, otp } = body;
+    
     if (!email || !otp) return fail(c, 'Email and OTP are required.', 400);
     
     const cleanEmail = String(email).toLowerCase().trim();
@@ -97,14 +102,29 @@ otp.post('/verify', async (c) => {
     await c.env.DB.prepare('UPDATE otp_verifications SET is_verified = 1 WHERE id = ?').bind(otpRecord.id).run();
     
     const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
+    let userId = existingUser ? existingUser.id : null;
+
     if (!existingUser) {
-      const userId = genId('usr');
+      userId = genId('usr');
       await c.env.DB.prepare(
         `INSERT INTO users (id, name, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, 'customer', datetime('now'), datetime('now'))`
       ).bind(userId, cleanEmail.split('@')[0], cleanEmail, '').run();
     }
+
+    // Generate a simple auth token or success payload matching frontend expectations
+    const token = genId('tok');
     
-    return ok(c, { success: true, message: 'OTP verified successfully!' });
+    return ok(c, { 
+      success: true, 
+      message: 'OTP verified successfully!',
+      token: token,
+      user: {
+        _id: userId,
+        name: cleanEmail.split('@')[0],
+        email: cleanEmail,
+        role: 'customer'
+      }
+    });
   } catch (err) {
     return fail(c, `Verify Error: ${err.message}`, 500);
   }
@@ -113,10 +133,18 @@ otp.post('/verify', async (c) => {
 // ✅ POST /api/otp/resend
 otp.post('/resend', async (c) => {
   try {
-    const { email } = await c.req.json().catch(() => ({}));
+    const body = await c.req.json().catch(() => ({}));
+    const { email } = body;
+    
     if (!email) return fail(c, 'Email is required.', 400);
     
     const cleanEmail = String(email).toLowerCase().trim();
+    
+    const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
+    if (existingUser) {
+      return c.json({ success: false, exists: true, error: 'Account already exists. Please login.' }, 409);
+    }
+    
     await c.env.DB.prepare('DELETE FROM otp_verifications WHERE email = ?').bind(cleanEmail).run();
     
     const otpCode = generateOTP();
