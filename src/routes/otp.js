@@ -103,10 +103,12 @@ otp.post('/verify', async (c) => {
     await c.env.DB.prepare('UPDATE otp_verifications SET is_verified = 1 WHERE id = ?').bind(otpRecord.id).run();
     
     const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email.toLowerCase().trim()).first();
+    
+    // 👇 YAHAN FIX KIYA HAI ('buyer' se 'customer') 👇
     if (!existingUser) {
       const userId = genId('usr');
       await c.env.DB.prepare(
-        `INSERT INTO users (id, name, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, 'buyer', datetime('now'), datetime('now'))`
+        `INSERT INTO users (id, name, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, 'customer', datetime('now'), datetime('now'))`
       ).bind(userId, email.split('@')[0], email.toLowerCase().trim(), '').run();
     }
     
@@ -115,7 +117,6 @@ otp.post('/verify', async (c) => {
     return fail(c, `Verify Error: ${err.message}`, 500);
   }
 });
-
 // ✅ POST /api/otp/resend
 otp.post('/resend', async (c) => {
   try {
