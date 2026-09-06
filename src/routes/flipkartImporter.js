@@ -21,17 +21,84 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
 
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      }
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-IN,en;q=0.9',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+      },
+      redirect: 'follow'
     });
 
-    if (!response.ok) {
-      return fail(c, `Failed to fetch Flipkart page. Status: ${response.status}`, 400);
+    // ✅ Agar 529 (server busy) ya koi aur error aaye, toh fetch retry karo
+    if (response.status === 529 || response.status === 503) {
+      // 2 second wait karke retry
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const retryResponse = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+      
+      if (!retryResponse.ok) {
+        return fail(c, `Failed to fetch Flipkart page. Status: ${retryResponse.status}`, 400);
+      }
+      
+      const html = await retryResponse.text();
+      
+      // JSON-LD extraction (same logic)
+      let productData = {};
+      const jsonLdMatch = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/);
+      if (jsonLdMatch) {
+        try {
+          const jsonLd = JSON.parse(jsonLdMatch[1]);
+          if (jsonLd.name && jsonLd.offers) {
+            productData = {
+              name: jsonLd.name,
+              price: jsonLd.offers?.price || 0,
+              image: jsonLd.image || '',
+              description: jsonLd.description || ''
+            };
+          }
+        } catch (e) {
+          // JSON parse fail hua, koi baat nahi
+        }
+      }
+
+      // Method 2: Text-based extraction
+      if (!productData.name) {
+        const titleMatch = html.match(/<h1[^>]*>(.*?)<\/h1>/);
+        const priceMatch = html.match(/₹\s*([\d,]+(?:\.\d+)?)/);
+        
+        if (titleMatch) {
+          productData.name = titleMatch[1].replace(/<[^>]+>/g, '').trim();
+        }
+        
+        if (priceMatch) {
+          productData.price = parseFloat(priceMatch[1].replace(/,/g, ''));
+        }
+      }
+
+      if (!productData.name || !productData.price) {
+        return fail(c, 'Unable to extract product data. Please check the URL or try a different product.', 400);
+      }
+
+      return ok(c, {
+        scraped: {
+          name: productData.name,
+          price: productData.price,
+          originalPrice: productData.price * 1.2,
+          brand: '',
+          description: productData.description ? [productData.description] : [],
+          keyFeatures: [],
+          images: productData.image ? [productData.image] : [],
+          weight: '',
+          ingredients: ''
+        }
+      });
     }
 
     const html = await response.text();
 
-    // ✅ Extract data using JSON-LD (structured data) - Ye sabse reliable hai
+    // ✅ Extract data using JSON-LD (structured data)
     let productData = {};
     
     // Method 1: JSON-LD se data nikaalo
