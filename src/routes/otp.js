@@ -9,22 +9,23 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// ✅ Send email using ZOHO SMTP
+// ✅ Send email using SENDER.NET SMTP
 const sendEmail = async (c, to, subject, html) => {
   try {
-    const { ZOHO_HOST, ZOHO_PORT, ZOHO_USER, ZOHO_PASS } = c.env;
+    const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = c.env;
     
-    // ✅ Simple SMTP logic (Zoho ke liye)
-    const response = await fetch('https://api.mailchannels.net/tx/v1/send', {
+    // ✅ Simple SMTP logic (Sender.net ke liye)
+    const response = await fetch('https://api.sender.net/v1/emails', {
       method: 'POST',
       headers: {
+        'Authorization': `Bearer ${SMTP_PASS}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        personalizations: [{ to: [{ email: to }] }],
-        from: { email: ZOHO_USER, name: 'MyPinkShop' },
+        from: { email: 'noreply@mypinkshop.com', name: 'MyPinkShop' },
+        to: [{ email: to }],
         subject: subject,
-        content: [{ type: 'text/html', value: html }],
+        html: html,
       }),
     });
     
