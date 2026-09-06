@@ -1,3 +1,4 @@
+// src/routes/otp.js
 import { Hono } from 'hono';
 import { ok, fail, genId } from '../lib/utils.js';
 
@@ -32,7 +33,6 @@ const sendEmail = async (c, to, subject, html) => {
     });
     
     if (!response.ok) {
-      // API ne reject kiya toh exact error text fetch kar lo
       const errorText = await response.text();
       return { ok: false, error: errorText };
     }
@@ -43,6 +43,7 @@ const sendEmail = async (c, to, subject, html) => {
   }
 };
 
+// ✅ POST /api/otp/send - Send OTP
 otp.post('/send', async (c) => {
   try {
     const { email } = await c.req.json().catch(() => ({}));
@@ -79,7 +80,6 @@ otp.post('/send', async (c) => {
     
     const emailResult = await sendEmail(c, email.toLowerCase().trim(), 'Your MyPinkShop OTP', emailHtml);
     
-    // ✅ Agar email fail hua, toh frontend par exact error throw karo!
     if (!emailResult.ok) {
       return fail(c, `Email API Error: ${emailResult.error}`, 500);
     }
@@ -94,7 +94,7 @@ otp.post('/send', async (c) => {
   }
 });
 
-// Verify route (Same as before)
+// ✅ POST /api/otp/verify - Verify OTP
 otp.post('/verify', async (c) => {
   try {
     const { email, otp } = await c.req.json().catch(() => ({}));
@@ -124,6 +124,53 @@ otp.post('/verify', async (c) => {
     return ok(c, { success: true, message: 'OTP verified successfully!' });
   } catch (err) {
     return fail(c, `Verify Error: ${err.message}`, 500);
+  }
+});
+
+// ✅ POST /api/otp/resend - Resend OTP
+otp.post('/resend', async (c) => {
+  try {
+    const { email } = await c.req.json().catch(() => ({}));
+    
+    if (!email) {
+      return fail(c, 'Email is required.', 400);
+    }
+    
+    // Delete old OTPs
+    await c.env.DB.prepare('DELETE FROM otp_verifications WHERE email = ?').bind(email.toLowerCase().trim()).run();
+    
+    // Generate new OTP
+    const otpCode = generateOTP();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    
+    const id = genId('otp');
+    await c.env.DB.prepare(
+      `INSERT INTO otp_verifications (id, email, otp_code, is_verified, created_at, expires_at)
+       VALUES (?, ?, ?, 0, datetime('now'), ?)`
+    ).bind(id, email.toLowerCase().trim(), otpCode, expiresAt).run();
+    
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #ec4899;">MyPinkShop</h2>
+        <p>Your OTP is:</p>
+        <h1 style="font-size: 48px; letter-spacing: 10px; color: #ec4899;">${otpCode}</h1>
+        <p>This OTP is valid for 10 minutes.</p>
+      </div>
+    `;
+    
+    const emailResult = await sendEmail(c, email.toLowerCase().trim(), 'Your MyPinkShop OTP', emailHtml);
+    
+    if (!emailResult.ok) {
+      return fail(c, `Email API Error: ${emailResult.error}`, 500);
+    }
+    
+    return ok(c, {
+      success: true,
+      message: 'OTP resent successfully!',
+      expiresIn: 600
+    });
+  } catch (err) {
+    return fail(c, `Failed to resend OTP: ${err.message}`, 500);
   }
 });
 
