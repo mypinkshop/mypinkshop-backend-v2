@@ -10,3 +10,6 @@ database_id = "00343abb-2eb1-4010-84a5-f5608523de3d"
 [vars]
 FRONTEND_URL = "https://mypinkshop.com"
 JWT_SECRET = "YbSNEP0omcxXSjCNQM6hCfnr0zwrpZhZElZgZdONQqI"
+FROM_EMAIL = "noreply@mypinkshop.com"
+APP_NAME = "cloudflare1"
+ZOHO_PASSWORD = "fT1iedg1nRjp"
