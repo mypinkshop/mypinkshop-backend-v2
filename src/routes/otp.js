@@ -8,7 +8,7 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// ✅ SENDER.NET API - Correct Endpoint & Payload
+// ✅ SENDER.NET API - Correct Endpoint (JO PEHLE CHAL RAHA THA)
 const sendEmail = async (c, to, subject, html) => {
   try {
     const { SENDER_API_KEY } = c.env;
@@ -17,7 +17,8 @@ const sendEmail = async (c, to, subject, html) => {
       return { ok: false, error: 'SENDER_API_KEY is missing' };
     }
 
-    const response = await fetch('https://api.sender.net/v2/emails/send', {
+    // ✅ YAHI ENDPOINT HAI (v2/emails, NOT v2/emails/send)
+    const response = await fetch('https://api.sender.net/v2/emails', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${SENDER_API_KEY}`,
@@ -48,7 +49,7 @@ const sendEmail = async (c, to, subject, html) => {
   }
 };
 
-// ✅ POST /api/otp/send
+// ✅ POST /api/otp/send (Wahi code jo pehle tha)
 otp.post('/send', async (c) => {
   try {
     const { email } = await c.req.json().catch(() => ({}));
@@ -59,7 +60,6 @@ otp.post('/send', async (c) => {
     const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
     if (existingUser) return fail(c, 'Account exists. Please login.', 409);
     
-    // Purane sabhi unverified OTPs delete kar do taaki conflict na ho
     await c.env.DB.prepare('DELETE FROM otp_verifications WHERE email = ?').bind(cleanEmail).run();
     
     const otpCode = generateOTP();
@@ -128,7 +128,7 @@ otp.post('/verify', async (c) => {
   }
 });
 
-// ✅ POST /api/otp/resend
+// ✅ POST /api/otp/resend (Wahi code jo pehle tha)
 otp.post('/resend', async (c) => {
   try {
     const { email } = await c.req.json().catch(() => ({}));
