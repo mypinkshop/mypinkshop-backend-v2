@@ -14,6 +14,7 @@ import usersRoutes from './routes/users.js';
 import ordersRoutes from './routes/orders.js';
 import paymentsRoutes from './routes/payments.js';
 import cartRoutes from './routes/cart.js';
+import wishlistRoutes from './routes/wishlist.js'; // Ye import upar add karo
 
 const app = new Hono();
 
@@ -80,6 +81,7 @@ app.route('/api/users', usersRoutes);
 app.route('/api/orders', ordersRoutes);
 app.route('/api/payments', paymentsRoutes);
 app.route('/api/cart', cartRoutes);
+app.route('/api/wishlist', wishlistRoutes); // Ye mount neeche add karo
 
 /* --------------------------------------------------------------------- */
 /* 404 + global error handling                                            */
