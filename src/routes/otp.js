@@ -9,13 +9,13 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// ✅ Send email using SENDER.NET SMTP
+// ✅ Send email using SENDER.NET v2 API
 const sendEmail = async (c, to, subject, html) => {
   try {
-    const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = c.env;
+    const { SMTP_USER, SMTP_PASS } = c.env;
     
-    // ✅ Simple SMTP logic (Sender.net ke liye)
-    const response = await fetch('https://api.sender.net/v1/emails', {
+    // ✅ v2 API Endpoint
+    const response = await fetch('https://api.sender.net/v2/emails', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${SMTP_PASS}`,
