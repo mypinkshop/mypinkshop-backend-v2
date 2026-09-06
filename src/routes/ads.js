@@ -42,6 +42,30 @@ ads.get('/public/banners', async (c) => {
   }
 });
 
+// GET /api/ads/public/sponsored-products
+ads.get('/public/sponsored-products', async (c) => {
+  try {
+    const url = new URL(c.req.url);
+    const limit = parseInt(url.searchParams.get('limit') || '4', 10);
+    if (limit > 20) limit = 20;
+
+    // Is query mein hum sponsored products select karte hain
+    const { results } = await c.env.DB.prepare(
+      `SELECT id, name, price, original_price, images, is_active, is_featured
+       FROM products
+       WHERE is_active = 1 AND is_featured = 1
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+      .bind(limit)
+      .all();
+
+    return ok(c, results || []);
+  } catch (err) {
+    return fail(c, `Failed to load sponsored products: ${err.message}`, 500);
+  }
+});
+
 // POST /api/ads/:id/click - increment click count (public, fire-and-forget from frontend)
 ads.post('/:id/click', async (c) => {
   try {
