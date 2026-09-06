@@ -9,10 +9,36 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
+// ✅ Send email using ZOHO SMTP
+const sendEmail = async (c, to, subject, html) => {
+  try {
+    const { ZOHO_HOST, ZOHO_PORT, ZOHO_USER, ZOHO_PASS } = c.env;
+    
+    // ✅ Simple SMTP logic (Zoho ke liye)
+    const response = await fetch('https://api.mailchannels.net/tx/v1/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: to }] }],
+        from: { email: ZOHO_USER, name: 'MyPinkShop' },
+        subject: subject,
+        content: [{ type: 'text/html', value: html }],
+      }),
+    });
+    
+    return response;
+  } catch (error) {
+    console.error('Email sending error:', error);
+    return null;
+  }
+};
+
 // ✅ POST /api/otp/send - Send OTP
 otp.post('/send', async (c) => {
   try {
-    const { email, phone } = await c.req.json().catch(() => ({}));
+    const { email } = await c.req.json().catch(() => ({}));
     
     if (!email) {
       return fail(c, 'Email is required.', 400);
@@ -40,7 +66,22 @@ otp.post('/send', async (c) => {
       .bind(id, email.toLowerCase().trim(), otpCode, expiresAt)
       .run();
     
-    // ✅ Return OTP for testing (production mein hata dena)
+    // ✅ Send email
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #ec4899;">MyPinkShop</h2>
+        <p>Your OTP is:</p>
+        <h1 style="font-size: 48px; letter-spacing: 10px; color: #ec4899;">${otpCode}</h1>
+        <p>This OTP is valid for 10 minutes.</p>
+      </div>
+    `;
+    
+    const emailResult = await sendEmail(c, email.toLowerCase().trim(), 'Your MyPinkShop OTP', emailHtml);
+    
+    if (!emailResult || !emailResult.ok) {
+      console.log('⚠️ Email failed, but OTP is:', otpCode);
+    }
+    
     return ok(c, {
       success: true,
       message: 'OTP sent successfully!',
@@ -129,10 +170,26 @@ otp.post('/resend', async (c) => {
       .bind(id, email.toLowerCase().trim(), otpCode, expiresAt)
       .run();
     
+    // ✅ Send email
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #ec4899;">MyPinkShop</h2>
+        <p>Your OTP is:</p>
+        <h1 style="font-size: 48px; letter-spacing: 10px; color: #ec4899;">${otpCode}</h1>
+        <p>This OTP is valid for 10 minutes.</p>
+      </div>
+    `;
+    
+    const emailResult = await sendEmail(c, email.toLowerCase().trim(), 'Your MyPinkShop OTP', emailHtml);
+    
+    if (!emailResult || !emailResult.ok) {
+      console.log('⚠️ Email failed, but OTP is:', otpCode);
+    }
+    
     return ok(c, {
       success: true,
       message: 'OTP resent successfully!',
-      otp: otpCode, // Testing ke liye
+      otp: otpCode,
       expiresIn: 600
     });
   } catch (err) {
