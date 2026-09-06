@@ -17,8 +17,8 @@ admin.get('/dashboard', authMiddleware, requireAdmin, async (c) => {
       c.env.DB.prepare('SELECT COUNT(*) as count FROM orders').first()
     ]);
 
-    // Total earnings (assuming commission is stored in orders)
-    const earnings = await c.env.DB.prepare('SELECT COALESCE(SUM(commission), 0) as total FROM orders').first();
+    // ✅ FIX: D1 mein commission column nahi hai, isliye total_amount use karo
+    const earnings = await c.env.DB.prepare('SELECT COALESCE(SUM(total_amount), 0) as total FROM orders').first();
     const totalEarnings = earnings?.total || 0;
 
     // Recent orders
