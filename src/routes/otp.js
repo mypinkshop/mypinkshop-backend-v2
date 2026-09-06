@@ -8,7 +8,7 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// ✅ SENDER.NET API - Correct Endpoint & Payload based on your Dashboard
+// ✅ SENDER.NET API - Correct Endpoint & Payload
 const sendEmail = async (c, to, subject, html) => {
   try {
     const { SENDER_API_KEY } = c.env;
@@ -17,7 +17,7 @@ const sendEmail = async (c, to, subject, html) => {
       return { ok: false, error: 'SENDER_API_KEY is missing' };
     }
 
-    const response = await fetch('https://api.sender.net/v2/message/send', {
+    const response = await fetch('https://api.sender.net/v2/emails/send', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${SENDER_API_KEY}`,
@@ -26,7 +26,7 @@ const sendEmail = async (c, to, subject, html) => {
       },
       body: JSON.stringify({
         from: { 
-          email: 'noreply@mypinkshop.com', // Agar ye fail ho, toh screenshot wala 'info@mypinkshop.com' try karna
+          email: 'noreply@mypinkshop.com',
           name: 'MyPinkShop' 
         },
         to: { 
@@ -94,7 +94,7 @@ otp.post('/verify', async (c) => {
     const { email, otp } = await c.req.json().catch(() => ({}));
     if (!email || !otp) return fail(c, 'Email and OTP are required.', 400);
     
-    // Strict Type Casting to prevent Number/String mismatch
+    // ✅ Strict match: String ko String se compare karo
     const cleanEmail = String(email).toLowerCase().trim();
     const cleanOtp = String(otp).trim(); 
     
@@ -104,13 +104,16 @@ otp.post('/verify', async (c) => {
     
     if (!otpRecord) return fail(c, 'Invalid OTP.', 400);
     
-    if (new Date(otpRecord.expires_at) < new Date()) {
+    // ✅ 5 minute ka buffer do expiry ke liye
+    if (new Date(otpRecord.expires_at) < new Date(Date.now() - 5 * 60 * 1000)) {
       await c.env.DB.prepare('DELETE FROM otp_verifications WHERE id = ?').bind(otpRecord.id).run();
       return fail(c, 'OTP expired.', 400);
     }
     
+    // ✅ Mark OTP as verified
     await c.env.DB.prepare('UPDATE otp_verifications SET is_verified = 1 WHERE id = ?').bind(otpRecord.id).run();
     
+    // ✅ Create user if not exists
     const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
     if (!existingUser) {
       const userId = genId('usr');
