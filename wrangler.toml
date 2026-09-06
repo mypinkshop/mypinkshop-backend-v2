@@ -4,7 +4,7 @@ pages_build_output_dir = "dist"
 [[d1_databases]]
 binding = "DB"
 database_name = "mypinkshop-db"
-database_id = "2d736aa4-0c5b-472e-a97b-cdbfab8e63e5"
+database_id = "00343abb-2eb1-4010-84a5-f5608523de3d"
 
 [vars]
 JWT_SECRET = "YbSNEP0omcxXSjCNQM6hCfnr0zwrpZhZElZgZdONQqI"
