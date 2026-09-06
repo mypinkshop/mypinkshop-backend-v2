@@ -8,16 +8,16 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// ✅ SENDER.NET API with Smart Error Returning
+// ✅ SENDER.NET API - Correct Endpoint & Payload based on your Dashboard
 const sendEmail = async (c, to, subject, html) => {
   try {
     const { SENDER_API_KEY } = c.env;
     
     if (!SENDER_API_KEY) {
-      return { ok: false, error: 'SENDER_API_KEY is missing in Cloudflare variables' };
+      return { ok: false, error: 'SENDER_API_KEY is missing' };
     }
 
-    const response = await fetch('https://api.sender.net/v2/emails', {
+    const response = await fetch('https://api.sender.net/v2/message/send', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${SENDER_API_KEY}`,
@@ -25,8 +25,13 @@ const sendEmail = async (c, to, subject, html) => {
         'Accept': 'application/json'
       },
       body: JSON.stringify({
-        to: [{ email: to }],
-        from: { email: 'noreply@mypinkshop.com', name: 'MyPinkShop' },
+        from: { 
+          email: 'noreply@mypinkshop.com', // Agar ye fail ho, toh screenshot wala 'info@mypinkshop.com' try karna
+          name: 'MyPinkShop' 
+        },
+        to: { 
+          email: to 
+        },
         subject: subject,
         html: html
       })
@@ -43,30 +48,21 @@ const sendEmail = async (c, to, subject, html) => {
   }
 };
 
-// ✅ POST /api/otp/send - Send OTP
+// ✅ POST /api/otp/send
 otp.post('/send', async (c) => {
   try {
     const { email } = await c.req.json().catch(() => ({}));
+    if (!email) return fail(c, 'Email is required.', 400);
     
-    if (!email) {
-      return fail(c, 'Email is required.', 400);
-    }
-    
-    const existingUser = await c.env.DB.prepare(
-      'SELECT id FROM users WHERE email = ?'
-    ).bind(email.toLowerCase().trim()).first();
-    
-    if (existingUser) {
-      return fail(c, 'An account with this email already exists. Please login.', 409);
-    }
+    const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email.toLowerCase().trim()).first();
+    if (existingUser) return fail(c, 'Account exists. Please login.', 409);
     
     const otpCode = generateOTP();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-    
     const id = genId('otp');
+    
     await c.env.DB.prepare(
-      `INSERT INTO otp_verifications (id, email, otp_code, is_verified, created_at, expires_at)
-       VALUES (?, ?, ?, 0, datetime('now'), ?)`
+      `INSERT INTO otp_verifications (id, email, otp_code, is_verified, created_at, expires_at) VALUES (?, ?, ?, 0, datetime('now'), ?)`
     ).bind(id, email.toLowerCase().trim(), otpCode, expiresAt).run();
     
     const emailHtml = `
@@ -84,31 +80,24 @@ otp.post('/send', async (c) => {
       return fail(c, `Email API Error: ${emailResult.error}`, 500);
     }
     
-    return ok(c, {
-      success: true,
-      message: 'OTP sent successfully!',
-      expiresIn: 600
-    });
+    return ok(c, { success: true, message: 'OTP sent successfully!', expiresIn: 600 });
   } catch (err) {
     return fail(c, `Failed to send OTP: ${err.message}`, 500);
   }
 });
 
-// ✅ POST /api/otp/verify - Verify OTP
+// ✅ POST /api/otp/verify
 otp.post('/verify', async (c) => {
   try {
     const { email, otp } = await c.req.json().catch(() => ({}));
     if (!email || !otp) return fail(c, 'Email and OTP are required.', 400);
     
-    const otpRecord = await c.env.DB.prepare(
-      'SELECT * FROM otp_verifications WHERE email = ? AND otp_code = ? AND is_verified = 0'
-    ).bind(email.toLowerCase().trim(), otp).first();
-    
+    const otpRecord = await c.env.DB.prepare('SELECT * FROM otp_verifications WHERE email = ? AND otp_code = ? AND is_verified = 0').bind(email.toLowerCase().trim(), otp).first();
     if (!otpRecord) return fail(c, 'Invalid OTP.', 400);
     
     if (new Date(otpRecord.expires_at) < new Date()) {
       await c.env.DB.prepare('DELETE FROM otp_verifications WHERE id = ?').bind(otpRecord.id).run();
-      return fail(c, 'OTP expired. Please request a new one.', 400);
+      return fail(c, 'OTP expired.', 400);
     }
     
     await c.env.DB.prepare('UPDATE otp_verifications SET is_verified = 1 WHERE id = ?').bind(otpRecord.id).run();
@@ -127,26 +116,20 @@ otp.post('/verify', async (c) => {
   }
 });
 
-// ✅ POST /api/otp/resend - Resend OTP
+// ✅ POST /api/otp/resend
 otp.post('/resend', async (c) => {
   try {
     const { email } = await c.req.json().catch(() => ({}));
+    if (!email) return fail(c, 'Email is required.', 400);
     
-    if (!email) {
-      return fail(c, 'Email is required.', 400);
-    }
-    
-    // Delete old OTPs
     await c.env.DB.prepare('DELETE FROM otp_verifications WHERE email = ?').bind(email.toLowerCase().trim()).run();
     
-    // Generate new OTP
     const otpCode = generateOTP();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-    
     const id = genId('otp');
+    
     await c.env.DB.prepare(
-      `INSERT INTO otp_verifications (id, email, otp_code, is_verified, created_at, expires_at)
-       VALUES (?, ?, ?, 0, datetime('now'), ?)`
+      `INSERT INTO otp_verifications (id, email, otp_code, is_verified, created_at, expires_at) VALUES (?, ?, ?, 0, datetime('now'), ?)`
     ).bind(id, email.toLowerCase().trim(), otpCode, expiresAt).run();
     
     const emailHtml = `
@@ -154,7 +137,6 @@ otp.post('/resend', async (c) => {
         <h2 style="color: #ec4899;">MyPinkShop</h2>
         <p>Your OTP is:</p>
         <h1 style="font-size: 48px; letter-spacing: 10px; color: #ec4899;">${otpCode}</h1>
-        <p>This OTP is valid for 10 minutes.</p>
       </div>
     `;
     
@@ -164,11 +146,7 @@ otp.post('/resend', async (c) => {
       return fail(c, `Email API Error: ${emailResult.error}`, 500);
     }
     
-    return ok(c, {
-      success: true,
-      message: 'OTP resent successfully!',
-      expiresIn: 600
-    });
+    return ok(c, { success: true, message: 'OTP resent successfully!', expiresIn: 600 });
   } catch (err) {
     return fail(c, `Failed to resend OTP: ${err.message}`, 500);
   }
