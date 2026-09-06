@@ -9,29 +9,40 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// ✅ Send email using MAILCHANNELS API (Cloudflare Free & Supported)
+// ✅ Send email using SENDER.NET API
 const sendEmail = async (c, to, subject, html) => {
   try {
-    const { SMTP_USER, SMTP_PASS } = c.env;
+    const { SENDER_API_KEY } = c.env;
     
-    // ✅ MailChannels API (Cloudflare Workers ke saath free)
-    const response = await fetch('https://api.mailchannels.net/tx/v1/send', {
+    if (!SENDER_API_KEY) {
+      console.error('⚠️ SENDER_API_KEY is missing in environment variables');
+      return { ok: false };
+    }
+
+    const response = await fetch('https://api.sender.net/v2/emails', {
       method: 'POST',
       headers: {
+        'Authorization': `Bearer ${SENDER_API_KEY}`,
         'Content-Type': 'application/json',
+        'Accept': 'application/json'
       },
       body: JSON.stringify({
-        personalizations: [{ to: [{ email: to }] }],
+        to: [{ email: to }],
         from: { email: 'noreply@mypinkshop.com', name: 'MyPinkShop' },
         subject: subject,
-        content: [{ type: 'text/html', value: html }],
-      }),
+        html: html
+      })
     });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Sender API Error:', errorText);
+    }
     
     return response;
   } catch (error) {
     console.error('Email sending error:', error);
-    return null;
+    return { ok: false };
   }
 };
 
@@ -85,7 +96,7 @@ otp.post('/send', async (c) => {
     return ok(c, {
       success: true,
       message: 'OTP sent successfully!',
-      otp: otpCode, // Testing ke liye
+      otp: otpCode, // Production me isko hata dena
       expiresIn: 600
     });
   } catch (err) {
