@@ -1,15 +1,28 @@
-name = "myjinkshop"
+# mypinkshop/backend-hono/wrangler.toml
+
+name = "mypinkshop-api"
 main = "src/index.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-12-18"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "myjinkshop-db"
-database_id = "REPLACE_WITH_YOUR_ID"
+database_name = "mypinkshop-db"
+database_id = "2d736aa4-0c5b-472e-a97b-cdbfab8e63e5"
 
-# JWT_SECRET must be set as a secret, not committed here. Run:
-#   wrangler secret put JWT_SECRET
-#
-# Any non-secret config vars can go here, e.g.:
-# [vars]
-# ENVIRONMENT = "production"
+[vars]
+JWT_SECRET = "YbSNEP0omcxXSjCNQM6hCfnr0zwrpZhZElZgZdONQqI"
+FRONTEND_URL = "https://mypinkshop.com"
+R2_ACCOUNT_ID = "2eb219f18500d8154501eed37d29a7e7"
+R2_ACCESS_KEY_ID = "af249454a07e7e9e7c63dad9bb6563b0"
+R2_SECRET_ACCESS_KEY = "57d2c1d6203ba4d3f506dce7d0856b2a2e7c9853ecd9a093700baa5ca71866c5"
+R2_BUCKET_NAME = "mypinkshop-images"
+R2_PUBLIC_URL = "https://pub-845f68571d2b4c4b9ea02fb8f6162582.r2.dev"
+
+[env.production]
+vars = { FRONTEND_URL = "https://mypinkshop.com" }
+
+[env.staging]
+vars = { FRONTEND_URL = "https://staging.mypinkshop.com" }
+
+[env.local]
+vars = { FRONTEND_URL = "http://localhost:3000" }
