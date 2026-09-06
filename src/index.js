@@ -18,6 +18,8 @@ import wishlistRoutes from './routes/wishlist.js';
 import importerRoutes from './routes/flipkartImporter.js'; // Flipkart Importer
 import adminRoutes from './routes/admin.js'; // ⬅️ Yeh import add kiya
 import notificationRoutes from './routes/notifications.js'; // ⬅️ Yeh import add kiya
+import uploadRoutes from './routes/upload.js';
+
 
 const app = new Hono();
 
@@ -88,6 +90,7 @@ app.route('/api/wishlist', wishlistRoutes);
 app.route('/api/import', importerRoutes); // Flipkart Importer Mount
 app.route('/api/admin', adminRoutes); // ⬅️ Yeh mount add kiya
 app.route('/api/notifications', notificationRoutes); // ⬅️ Yeh mount add kiya
+app.route('/api/upload', uploadRoutes);
 
 /* --------------------------------------------------------------------- */
 /* 404 + global error handling                                            */
