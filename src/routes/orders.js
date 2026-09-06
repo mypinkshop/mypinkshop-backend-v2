@@ -12,8 +12,9 @@ const VALID_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancell
 /* --------------------------------------------------------------------- */
 
 // ✅ POST /api/orders - Create new order (Frontend Checkout.js isko hit karta hai)
-orders.post('/', async (c) => {
+orders.post('/', authMiddleware, async (c) => {
   try {
+    const user = c.get('user');
     const body = await c.req.json().catch(() => ({}));
     
     // Validation
@@ -46,7 +47,7 @@ orders.post('/', async (c) => {
     )
       .bind(
         id,
-        body.userId || null,
+        user.id,
         orderNumber,
         subtotal,
         taxAmount,
