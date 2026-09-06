@@ -102,10 +102,16 @@ auth.post('/register', async (c) => {
 
     const token = await signJWT({ id, email: email.toLowerCase().trim(), role: 'customer', name }, c.env.JWT_SECRET);
 
-    return ok(c, {
-      token,
-      user: { id, name, email: email.toLowerCase().trim(), role: 'customer' },
-    }, undefined, 201);
+    return c.json({
+      success: true,
+      data: {
+        token,
+        _id: id,
+        name,
+        email: email.toLowerCase().trim(),
+        role: 'customer'
+      }
+    }, 201);
   } catch (err) {
     return fail(c, `Registration failed: ${err.message}`, 500);
   }
@@ -141,9 +147,16 @@ auth.post('/login', async (c) => {
       c.env.JWT_SECRET
     );
 
-    return ok(c, {
-      token,
-      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    // ✅ IMPORTANT: Frontend ko sahi data do (role, id, email sab alag se)
+    return c.json({
+      success: true,
+      data: {
+        token: token,
+        _id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      }
     });
   } catch (err) {
     return fail(c, `Login failed: ${err.message}`, 500);
