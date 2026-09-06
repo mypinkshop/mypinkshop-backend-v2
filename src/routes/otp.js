@@ -8,12 +8,9 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// ✅ Send email using ZOHO SMTP (via MailChannels API)
+// ✅ Send email via Cloudflare MailChannels (Using Zoho alias noreply@mypinkshop.com)
 const sendEmail = async (c, to, subject, html) => {
   try {
-    const { SMTP_USER, SMTP_PASS } = c.env;
-    
-    // ✅ Zoho se bhejne ke liye MailChannels ka use karo
     const response = await fetch('https://api.mailchannels.net/tx/v1/send', {
       method: 'POST',
       headers: {
@@ -89,28 +86,25 @@ otp.post('/verify', async (c) => {
     const cleanEmail = String(email).toLowerCase().trim();
     const cleanOtp = String(otp).trim(); 
     
-    // ✅ Find OTP record (Verified ya Unverified dono check karo)
     const otpRecord = await c.env.DB.prepare(
       'SELECT * FROM otp_verifications WHERE email = ? AND otp_code = ?'
     ).bind(cleanEmail, cleanOtp).first();
     
     if (!otpRecord) return fail(c, 'Invalid OTP.', 400);
     
-    // ✅ 10 minute ka buffer do expiry ke liye
     if (new Date(otpRecord.expires_at) < new Date(Date.now() - 10 * 60 * 1000)) {
       await c.env.DB.prepare('DELETE FROM otp_verifications WHERE id = ?').bind(otpRecord.id).run();
       return fail(c, 'OTP expired.', 400);
     }
     
-    // ✅ Mark OTP as verified
     await c.env.DB.prepare('UPDATE otp_verifications SET is_verified = 1 WHERE id = ?').bind(otpRecord.id).run();
     
-    // ✅ Create user if not exists
     const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
     if (!existingUser) {
       const userId = genId('usr');
+      // ✅ Fixed role: 'customer' (Matches database CHECK constraint)
       await c.env.DB.prepare(
-        `INSERT INTO users (id, name, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, 'buyer', datetime('now'), datetime('now'))`
+        `INSERT INTO users (id, name, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, 'customer', datetime('now'), datetime('now'))`
       ).bind(userId, cleanEmail.split('@')[0], cleanEmail, '').run();
     }
     
@@ -126,7 +120,8 @@ otp.post('/resend', async (c) => {
     const { email } = await c.req.json().catch(() => ({}));
     if (!email) return fail(c, 'Email is required.', 400);
     
-    await c.env.DB.prepare('DELETE FROM otp_verifications WHERE email = ?').bind(email.toLowerCase().trim()).run();
+    const cleanEmail = String(email).toLowerCase().trim();
+    await c.env.DB.prepare('DELETE FROM otp_verifications WHERE email = ?').bind(cleanEmail).run();
     
     const otpCode = generateOTP();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -134,7 +129,7 @@ otp.post('/resend', async (c) => {
     
     await c.env.DB.prepare(
       `INSERT INTO otp_verifications (id, email, otp_code, is_verified, created_at, expires_at) VALUES (?, ?, ?, 0, datetime('now'), ?)`
-    ).bind(id, email.toLowerCase().trim(), otpCode, expiresAt).run();
+    ).bind(id, cleanEmail, otpCode, expiresAt).run();
     
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -144,7 +139,7 @@ otp.post('/resend', async (c) => {
       </div>
     `;
     
-    const emailResult = await sendEmail(c, email.toLowerCase().trim(), 'Your MyPinkShop OTP', emailHtml);
+    const emailResult = await sendEmail(c, cleanEmail, 'Your MyPinkShop OTP', emailHtml);
     
     if (!emailResult.ok) {
       return fail(c, `Email API Error: ${emailResult.error}`, 500);
