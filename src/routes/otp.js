@@ -8,7 +8,7 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// ✅ Send email via Cloudflare MailChannels (Using Zoho alias noreply@mypinkshop.com)
+// ✅ MailChannels API (No API keys required, uses Cloudflare native routing)
 const sendEmail = async (c, to, subject, html) => {
   try {
     const response = await fetch('https://api.mailchannels.net/tx/v1/send', {
@@ -66,10 +66,7 @@ otp.post('/send', async (c) => {
     `;
     
     const emailResult = await sendEmail(c, cleanEmail, 'Your MyPinkShop OTP', emailHtml);
-    
-    if (!emailResult.ok) {
-      return fail(c, `Email API Error: ${emailResult.error}`, 500);
-    }
+    if (!emailResult.ok) return fail(c, `Email API Error: ${emailResult.error}`, 500);
     
     return ok(c, { success: true, message: 'OTP sent successfully!', expiresIn: 600 });
   } catch (err) {
@@ -102,7 +99,6 @@ otp.post('/verify', async (c) => {
     const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
     if (!existingUser) {
       const userId = genId('usr');
-      // ✅ Fixed role: 'customer' (Matches database CHECK constraint)
       await c.env.DB.prepare(
         `INSERT INTO users (id, name, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, 'customer', datetime('now'), datetime('now'))`
       ).bind(userId, cleanEmail.split('@')[0], cleanEmail, '').run();
@@ -140,10 +136,7 @@ otp.post('/resend', async (c) => {
     `;
     
     const emailResult = await sendEmail(c, cleanEmail, 'Your MyPinkShop OTP', emailHtml);
-    
-    if (!emailResult.ok) {
-      return fail(c, `Email API Error: ${emailResult.error}`, 500);
-    }
+    if (!emailResult.ok) return fail(c, `Email API Error: ${emailResult.error}`, 500);
     
     return ok(c, { success: true, message: 'OTP resent successfully!', expiresIn: 600 });
   } catch (err) {
