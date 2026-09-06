@@ -9,6 +9,8 @@ function serializeProduct(row) {
   if (!row) return null;
   return {
     ...row,
+    id: row.id,          // ✅ ID ko explicit set karo
+    _id: row.id,
     images: safeJsonArray(row.images),
     aboutThisItem: safeJsonArray(row.about_this_item),
     isActive: !!row.is_active,
