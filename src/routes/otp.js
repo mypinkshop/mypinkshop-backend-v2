@@ -54,8 +54,13 @@ otp.post('/send', async (c) => {
     const { email } = await c.req.json().catch(() => ({}));
     if (!email) return fail(c, 'Email is required.', 400);
     
-    const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email.toLowerCase().trim()).first();
+    const cleanEmail = String(email).toLowerCase().trim();
+    
+    const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
     if (existingUser) return fail(c, 'Account exists. Please login.', 409);
+    
+    // Purane sabhi unverified OTPs delete kar do taaki conflict na ho
+    await c.env.DB.prepare('DELETE FROM otp_verifications WHERE email = ?').bind(cleanEmail).run();
     
     const otpCode = generateOTP();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -63,7 +68,7 @@ otp.post('/send', async (c) => {
     
     await c.env.DB.prepare(
       `INSERT INTO otp_verifications (id, email, otp_code, is_verified, created_at, expires_at) VALUES (?, ?, ?, 0, datetime('now'), ?)`
-    ).bind(id, email.toLowerCase().trim(), otpCode, expiresAt).run();
+    ).bind(id, cleanEmail, otpCode, expiresAt).run();
     
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -74,11 +79,8 @@ otp.post('/send', async (c) => {
       </div>
     `;
     
-    const emailResult = await sendEmail(c, email.toLowerCase().trim(), 'Your MyPinkShop OTP', emailHtml);
-    
-    if (!emailResult.ok) {
-      return fail(c, `Email API Error: ${emailResult.error}`, 500);
-    }
+    const emailResult = await sendEmail(c, cleanEmail, 'Your MyPinkShop OTP', emailHtml);
+    if (!emailResult.ok) return fail(c, `Email API Error: ${emailResult.error}`, 500);
     
     return ok(c, { success: true, message: 'OTP sent successfully!', expiresIn: 600 });
   } catch (err) {
@@ -92,7 +94,14 @@ otp.post('/verify', async (c) => {
     const { email, otp } = await c.req.json().catch(() => ({}));
     if (!email || !otp) return fail(c, 'Email and OTP are required.', 400);
     
-    const otpRecord = await c.env.DB.prepare('SELECT * FROM otp_verifications WHERE email = ? AND otp_code = ? AND is_verified = 0').bind(email.toLowerCase().trim(), otp).first();
+    // Strict Type Casting to prevent Number/String mismatch
+    const cleanEmail = String(email).toLowerCase().trim();
+    const cleanOtp = String(otp).trim(); 
+    
+    const otpRecord = await c.env.DB.prepare(
+      'SELECT * FROM otp_verifications WHERE email = ? AND otp_code = ? AND is_verified = 0'
+    ).bind(cleanEmail, cleanOtp).first();
+    
     if (!otpRecord) return fail(c, 'Invalid OTP.', 400);
     
     if (new Date(otpRecord.expires_at) < new Date()) {
@@ -102,14 +111,12 @@ otp.post('/verify', async (c) => {
     
     await c.env.DB.prepare('UPDATE otp_verifications SET is_verified = 1 WHERE id = ?').bind(otpRecord.id).run();
     
-    const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email.toLowerCase().trim()).first();
-    
-    // 👇 YAHAN FIX KIYA HAI ('buyer' se 'customer') 👇
+    const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
     if (!existingUser) {
       const userId = genId('usr');
       await c.env.DB.prepare(
         `INSERT INTO users (id, name, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, 'customer', datetime('now'), datetime('now'))`
-      ).bind(userId, email.split('@')[0], email.toLowerCase().trim(), '').run();
+      ).bind(userId, cleanEmail.split('@')[0], cleanEmail, '').run();
     }
     
     return ok(c, { success: true, message: 'OTP verified successfully!' });
@@ -117,6 +124,7 @@ otp.post('/verify', async (c) => {
     return fail(c, `Verify Error: ${err.message}`, 500);
   }
 });
+
 // ✅ POST /api/otp/resend
 otp.post('/resend', async (c) => {
   try {
