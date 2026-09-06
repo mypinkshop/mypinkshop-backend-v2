@@ -21,6 +21,8 @@ import notificationRoutes from './routes/notifications.js'; // ⬅️ Yeh import
 import uploadRoutes from './routes/upload.js';
 import couponRoutes from './routes/coupons.js';
 import shippingRoutes from './routes/shipping.js';
+import otpRoutes from './routes/otp.js';
+
 
 
 
@@ -96,6 +98,7 @@ app.route('/api/notifications', notificationRoutes); // ⬅️ Yeh mount add kiy
 app.route('/api/upload', uploadRoutes);
 app.route('/api/coupons', couponRoutes);
 app.route('/api/shipping', shippingRoutes);
+app.route('/api/otp', otpRoutes);
 
 /* --------------------------------------------------------------------- */
 /* 404 + global error handling                                            */
