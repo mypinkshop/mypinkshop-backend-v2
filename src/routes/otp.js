@@ -8,7 +8,7 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// ✅ SENDER.NET API - Correct Endpoint (JO PEHLE CHAL RAHA THA)
+// ✅ SENDER.NET API - Correct Endpoint & Payload based on your Dashboard
 const sendEmail = async (c, to, subject, html) => {
   try {
     const { SENDER_API_KEY } = c.env;
@@ -17,8 +17,7 @@ const sendEmail = async (c, to, subject, html) => {
       return { ok: false, error: 'SENDER_API_KEY is missing' };
     }
 
-    // ✅ YAHI ENDPOINT HAI (v2/emails, NOT v2/emails/send)
-    const response = await fetch('https://api.sender.net/v2/emails', {
+    const response = await fetch('https://api.sender.net/v2/message/send', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${SENDER_API_KEY}`,
@@ -27,7 +26,7 @@ const sendEmail = async (c, to, subject, html) => {
       },
       body: JSON.stringify({
         from: { 
-          email: 'noreply@mypinkshop.com',
+          email: 'noreply@mypinkshop.com', // Agar ye fail ho, toh screenshot wala 'info@mypinkshop.com' try karna
           name: 'MyPinkShop' 
         },
         to: { 
@@ -49,18 +48,14 @@ const sendEmail = async (c, to, subject, html) => {
   }
 };
 
-// ✅ POST /api/otp/send (Wahi code jo pehle tha)
+// ✅ POST /api/otp/send
 otp.post('/send', async (c) => {
   try {
     const { email } = await c.req.json().catch(() => ({}));
     if (!email) return fail(c, 'Email is required.', 400);
     
-    const cleanEmail = String(email).toLowerCase().trim();
-    
-    const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
+    const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email.toLowerCase().trim()).first();
     if (existingUser) return fail(c, 'Account exists. Please login.', 409);
-    
-    await c.env.DB.prepare('DELETE FROM otp_verifications WHERE email = ?').bind(cleanEmail).run();
     
     const otpCode = generateOTP();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -68,7 +63,7 @@ otp.post('/send', async (c) => {
     
     await c.env.DB.prepare(
       `INSERT INTO otp_verifications (id, email, otp_code, is_verified, created_at, expires_at) VALUES (?, ?, ?, 0, datetime('now'), ?)`
-    ).bind(id, cleanEmail, otpCode, expiresAt).run();
+    ).bind(id, email.toLowerCase().trim(), otpCode, expiresAt).run();
     
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -79,8 +74,11 @@ otp.post('/send', async (c) => {
       </div>
     `;
     
-    const emailResult = await sendEmail(c, cleanEmail, 'Your MyPinkShop OTP', emailHtml);
-    if (!emailResult.ok) return fail(c, `Email API Error: ${emailResult.error}`, 500);
+    const emailResult = await sendEmail(c, email.toLowerCase().trim(), 'Your MyPinkShop OTP', emailHtml);
+    
+    if (!emailResult.ok) {
+      return fail(c, `Email API Error: ${emailResult.error}`, 500);
+    }
     
     return ok(c, { success: true, message: 'OTP sent successfully!', expiresIn: 600 });
   } catch (err) {
@@ -94,32 +92,22 @@ otp.post('/verify', async (c) => {
     const { email, otp } = await c.req.json().catch(() => ({}));
     if (!email || !otp) return fail(c, 'Email and OTP are required.', 400);
     
-    // ✅ Strict match: String ko String se compare karo
-    const cleanEmail = String(email).toLowerCase().trim();
-    const cleanOtp = String(otp).trim(); 
-    
-    const otpRecord = await c.env.DB.prepare(
-      'SELECT * FROM otp_verifications WHERE email = ? AND otp_code = ? AND is_verified = 0'
-    ).bind(cleanEmail, cleanOtp).first();
-    
+    const otpRecord = await c.env.DB.prepare('SELECT * FROM otp_verifications WHERE email = ? AND otp_code = ? AND is_verified = 0').bind(email.toLowerCase().trim(), otp).first();
     if (!otpRecord) return fail(c, 'Invalid OTP.', 400);
     
-    // ✅ 5 minute ka buffer do expiry ke liye
-    if (new Date(otpRecord.expires_at) < new Date(Date.now() - 5 * 60 * 1000)) {
+    if (new Date(otpRecord.expires_at) < new Date()) {
       await c.env.DB.prepare('DELETE FROM otp_verifications WHERE id = ?').bind(otpRecord.id).run();
       return fail(c, 'OTP expired.', 400);
     }
     
-    // ✅ Mark OTP as verified
     await c.env.DB.prepare('UPDATE otp_verifications SET is_verified = 1 WHERE id = ?').bind(otpRecord.id).run();
     
-    // ✅ Create user if not exists
-    const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
+    const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email.toLowerCase().trim()).first();
     if (!existingUser) {
       const userId = genId('usr');
       await c.env.DB.prepare(
-        `INSERT INTO users (id, name, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, 'customer', datetime('now'), datetime('now'))`
-      ).bind(userId, cleanEmail.split('@')[0], cleanEmail, '').run();
+        `INSERT INTO users (id, name, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, 'buyer', datetime('now'), datetime('now'))`
+      ).bind(userId, email.split('@')[0], email.toLowerCase().trim(), '').run();
     }
     
     return ok(c, { success: true, message: 'OTP verified successfully!' });
@@ -128,7 +116,7 @@ otp.post('/verify', async (c) => {
   }
 });
 
-// ✅ POST /api/otp/resend (Wahi code jo pehle tha)
+// ✅ POST /api/otp/resend
 otp.post('/resend', async (c) => {
   try {
     const { email } = await c.req.json().catch(() => ({}));
