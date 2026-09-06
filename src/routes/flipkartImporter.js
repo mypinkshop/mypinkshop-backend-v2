@@ -5,7 +5,7 @@ import { ok, fail, genId } from '../lib/utils.js';
 
 const importer = new Hono();
 
-// ✅ GET /api/import/flipkart (Test route - sirf URL check karne ke liye)
+// ✅ GET /api/import/flipkart (Test route)
 importer.get('/flipkart', async (c) => {
   return ok(c, { message: 'Flipkart importer route is working!' });
 });
@@ -31,32 +31,54 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
 
     const html = await response.text();
 
-    // ✅ Extract data (Basic regex parsing - aap isko aur behtar bana sakte ho)
-    const titleMatch = html.match(/<h1[^>]*class="[^"]*"[^>]*>(.*?)<\/h1>/);
-    const priceMatch = html.match(/<div[^>]*class="[^"]*_30jeq3[^"]*"[^>]*>(.*?)<\/div>/);
-    const imageMatch = html.match(/<img[^>]*src="(.*?)"[^>]*class="[^"]*_396cs4[^"]*"/);
-
-    if (!titleMatch) {
-      return fail(c, 'Unable to extract product data. Please check the URL.', 400);
+    // ✅ Extract data using JSON-LD (structured data) - Ye sabse reliable hai
+    let productData = {};
+    
+    // Method 1: JSON-LD se data nikaalo
+    const jsonLdMatch = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/);
+    if (jsonLdMatch) {
+      try {
+        const jsonLd = JSON.parse(jsonLdMatch[1]);
+        if (jsonLd.name && jsonLd.offers) {
+          productData = {
+            name: jsonLd.name,
+            price: jsonLd.offers?.price || 0,
+            image: jsonLd.image || '',
+            description: jsonLd.description || ''
+          };
+        }
+      } catch (e) {
+        // JSON parse fail hua, koi baat nahi
+      }
     }
 
-    const productName = titleMatch[1].replace(/<[^>]+>/g, '').trim();
-    const price = priceMatch ? parseFloat(priceMatch[1].replace(/[^0-9.]/g, '')) : 0;
-    const image = imageMatch ? imageMatch[1] : '';
+    // Method 2: Agar JSON-LD nahi mila, toh text-based extraction karo
+    if (!productData.name) {
+      const titleMatch = html.match(/<h1[^>]*>(.*?)<\/h1>/);
+      const priceMatch = html.match(/₹\s*([\d,]+(?:\.\d+)?)/);
+      
+      if (titleMatch) {
+        productData.name = titleMatch[1].replace(/<[^>]+>/g, '').trim();
+      }
+      
+      if (priceMatch) {
+        productData.price = parseFloat(priceMatch[1].replace(/,/g, ''));
+      }
+    }
 
-    if (!productName || price === 0) {
-      return fail(c, 'Invalid Flipkart product data. Please check the URL.', 400);
+    if (!productData.name || !productData.price) {
+      return fail(c, 'Unable to extract product data. Please check the URL or try a different product.', 400);
     }
 
     return ok(c, {
       scraped: {
-        name: productName,
-        price: price,
-        originalPrice: price * 1.2,
+        name: productData.name,
+        price: productData.price,
+        originalPrice: productData.price * 1.2,
         brand: '',
-        description: [],
+        description: productData.description ? [productData.description] : [],
         keyFeatures: [],
-        images: image ? [image] : [],
+        images: productData.image ? [productData.image] : [],
         weight: '',
         ingredients: ''
       }
