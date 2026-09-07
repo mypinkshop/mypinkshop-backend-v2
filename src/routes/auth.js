@@ -103,15 +103,18 @@ auth.post('/register', async (c) => {
 
     const token = await signJWT({ id, email: email.toLowerCase().trim(), role: 'customer', name }, c.env.JWT_SECRET);
 
+    // ✅ Same shape fix as /login — see comment there.
+    const userPayload = { id, _id: id, name, email: email.toLowerCase().trim(), role: 'customer' };
     return c.json({
       success: true,
-      data: {
-        token,
-        _id: id,
-        name,
-        email: email.toLowerCase().trim(),
-        role: 'customer'
-      }
+      token,
+      id,
+      _id: id,
+      name,
+      email: email.toLowerCase().trim(),
+      role: 'customer',
+      user: userPayload,
+      data: { token, ...userPayload, user: userPayload },
     }, 201);
   } catch (err) {
     return fail(c, `Registration failed: ${err.message}`, 500);
@@ -148,16 +151,26 @@ auth.post('/login', async (c) => {
       c.env.JWT_SECRET
     );
 
-    // ✅ IMPORTANT: Frontend ko sahi data do (role, id, email sab alag se)
+    // ✅ CRITICAL FIX: previously this returned only { success, data: {...} }.
+    // Three different frontend pages call this SAME /api/auth/login route
+    // and each reads a different shape:
+    //   - Login.jsx / AuthContext.login()  → top-level `token` + `user.{_id,name,email,role}`
+    //   - AdminLogin.jsx                   → fully flat `token`,`role`,`email`,`name`,`_id`
+    // Neither matched the old { data: {...} } shape (data.user was
+    // `undefined`, so destructuring it threw and login always failed).
+    // This response now includes the fields at every level every existing
+    // page actually reads, so nothing else needs to change.
+    const userPayload = { id: user.id, _id: user.id, name: user.name, email: user.email, role: user.role };
     return c.json({
       success: true,
-      data: {
-        token: token,
-        _id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role
-      }
+      token,
+      id: user.id,
+      _id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      user: userPayload,
+      data: { token, ...userPayload, user: userPayload },
     });
   } catch (err) {
     return fail(c, `Login failed: ${err.message}`, 500);
