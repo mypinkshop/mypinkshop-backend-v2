@@ -231,7 +231,27 @@ orders.get('/user', authMiddleware, async (c) => {
       }
     }
 
-    return ok(c, userOrders);
+    // ✅ FIX 2: order_date and product image ke liye
+    const formattedOrders = (userOrders || []).map(order => {
+      // Properly format date
+      const createdAt = order.created_at;
+      const formattedDate = createdAt 
+        ? new Date(createdAt.replace(' ', 'T') + 'Z').toISOString() 
+        : null;
+
+      return {
+        ...order,
+        created_at: formattedDate, // Frontend ko ISO format milega
+        items: (order.items || []).map(item => {
+          return {
+            ...item,
+            image: item.image || null // Frontend isko item.image ke roop mein use karega
+          };
+        })
+      };
+    });
+
+    return ok(c, formattedOrders);
   } catch (err) {
     return fail(c, `Failed to load orders: ${err.message}`, 500);
   }
