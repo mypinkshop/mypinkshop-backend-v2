@@ -26,7 +26,6 @@ import addressRoutes from './routes/addresses.js';
 import userCardsRoutes from './routes/userCards.js';
 import userUpiRoutes from './routes/userUpi.js';
 import reviewRoutes from './routes/reviews.js';
-import orderHistoryRoutes from './routes/orderHistory.js';
 
 
 
