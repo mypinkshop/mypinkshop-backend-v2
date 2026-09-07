@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { signJWT, verifyJWT } from '../lib/jwt.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
 import { ok, fail, genId } from '../lib/utils.js';
+import { sendEmail } from '../lib/email.js';
 
 const auth = new Hono();
 
@@ -183,6 +184,114 @@ auth.get('/me', authMiddleware, async (c) => {
 // POST /api/auth/logout (stateless JWT: client just discards the token)
 auth.post('/logout', authMiddleware, async (c) => {
   return ok(c, { message: 'Logged out successfully.' });
+});
+
+/* --------------------------------------------------------------------- */
+/* Forgot / reset password                                                */
+/* --------------------------------------------------------------------- */
+
+// POST /api/auth/forgot-password
+// Body: { email }
+auth.post('/forgot-password', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const { email } = body;
+
+    if (!email) return fail(c, 'email is required.', 400);
+
+    const cleanEmail = String(email).toLowerCase().trim();
+    const genericSuccess = () =>
+      ok(c, { message: 'If that email is registered, a password reset link has been sent.' });
+
+    const user = await c.env.DB.prepare('SELECT id, name FROM users WHERE email = ?')
+      .bind(cleanEmail)
+      .first();
+
+    if (!user) {
+      // Don't reveal whether the account exists; still respond success.
+      return genericSuccess();
+    }
+
+    // Invalidate any older unused reset tokens for this user first.
+    await c.env.DB.prepare('DELETE FROM password_resets WHERE user_id = ?').bind(user.id).run();
+
+    const resetToken = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 minutes
+    const id = genId('pwr');
+
+    await c.env.DB.prepare(
+      `INSERT INTO password_resets (id, user_id, token, used, created_at, expires_at)
+       VALUES (?, ?, ?, 0, datetime('now'), ?)`
+    )
+      .bind(id, user.id, resetToken, expiresAt)
+      .run();
+
+    const frontendUrl = c.env.FRONTEND_URL || 'https://www.mypinkshop.com';
+    const resetLink = `${frontendUrl}/reset-password/${resetToken}`;
+
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #ec4899;">MyPinkShop</h2>
+        <p>Hi ${user.name || ''},</p>
+        <p>We received a request to reset your password. Click the button below to choose a new one:</p>
+        <p style="text-align: center; margin: 30px 0;">
+          <a href="${resetLink}" style="background: #ec4899; color: white; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: bold;">Reset Password</a>
+        </p>
+        <p style="color: #888; font-size: 13px;">This link expires in 30 minutes. If you didn't request this, you can safely ignore this email.</p>
+      </div>
+    `;
+
+    const emailResult = await sendEmail(c, cleanEmail, 'Reset your MyPinkShop password', emailHtml);
+    if (!emailResult.ok) {
+      return fail(c, `Email API Error: ${emailResult.error}`, 500);
+    }
+
+    return genericSuccess();
+  } catch (err) {
+    return fail(c, `Failed to process request: ${err.message}`, 500);
+  }
+});
+
+// POST /api/auth/reset-password/:token
+// Body: { password }
+auth.post('/reset-password/:token', async (c) => {
+  try {
+    const token = c.req.param('token');
+    const body = await c.req.json().catch(() => ({}));
+    const { password } = body;
+
+    if (!password || password.length < 6) {
+      return fail(c, 'Password must be at least 6 characters.', 400);
+    }
+
+    const resetRecord = await c.env.DB.prepare(
+      'SELECT * FROM password_resets WHERE token = ?'
+    )
+      .bind(token)
+      .first();
+
+    if (!resetRecord) return fail(c, 'Invalid or expired reset link.', 400);
+    if (resetRecord.used) return fail(c, 'This reset link has already been used.', 400);
+    if (new Date(resetRecord.expires_at) < new Date()) {
+      return fail(c, 'This reset link has expired. Please request a new one.', 400);
+    }
+
+    const passwordHash = await hashPassword(password);
+
+    await c.env.DB.prepare(
+      `UPDATE users SET password = ?, updated_at = datetime('now') WHERE id = ?`
+    )
+      .bind(passwordHash, resetRecord.user_id)
+      .run();
+
+    await c.env.DB.prepare('UPDATE password_resets SET used = 1 WHERE id = ?')
+      .bind(resetRecord.id)
+      .run();
+
+    return ok(c, { message: 'Password has been reset successfully.' });
+  } catch (err) {
+    return fail(c, `Failed to reset password: ${err.message}`, 500);
+  }
 });
 
 export default auth;
