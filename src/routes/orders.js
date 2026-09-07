@@ -201,6 +201,21 @@ orders.get('/my-orders', authMiddleware, async (c) => {
   }
 });
 
+
+// GET /api/orders/user - User ke apne saare orders
+orders.get('/user', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user');
+    const { results } = await c.env.DB.prepare(
+      'SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC'
+    ).bind(user.id).all();
+    
+    return ok(c, results || []);
+  } catch (err) {
+    return fail(c, `Failed to load orders: ${err.message}`, 500);
+  }
+});
+
 // GET /api/orders/:id
 orders.get('/:id', authMiddleware, async (c) => {
   try {
