@@ -1,6 +1,6 @@
 // src/routes/otp.js
 import { Hono } from 'hono';
-import { ok, fail, genId } from '../lib/utils.js';
+import { fail, genId } from '../lib/utils.js';
 
 const otp = new Hono();
 
@@ -120,7 +120,7 @@ otp.post('/send', async (c) => {
     const emailResult = await sendEmail(c, cleanEmail, 'Your MyPinkShop OTP', emailHtml);
     if (!emailResult.ok) return fail(c, `Email API Error: ${emailResult.error}`, 500);
 
-    return ok(c, { success: true, message: 'OTP sent successfully!', expiresIn: 600 });
+    return c.json({ success: true, message: 'OTP sent successfully!', expiresIn: 600 });
   } catch (err) {
     return fail(c, `Failed to send OTP: ${err.message}`, 500);
   }
@@ -163,7 +163,9 @@ otp.post('/verify', async (c) => {
     // Generate a simple auth token or success payload matching frontend expectations
     const token = genId('tok');
 
-    return ok(c, {
+    // NOTE: returned as a flat object (not wrapped via ok()) because the
+    // frontend reads o.token / o.user directly off the top-level response.
+    return c.json({
       success: true,
       message: 'OTP verified successfully!',
       token: token,
@@ -215,7 +217,7 @@ otp.post('/resend', async (c) => {
     const emailResult = await sendEmail(c, cleanEmail, 'Your MyPinkShop OTP', emailHtml);
     if (!emailResult.ok) return fail(c, `Email API Error: ${emailResult.error}`, 500);
 
-    return ok(c, { success: true, message: 'OTP resent successfully!', expiresIn: 600 });
+    return c.json({ success: true, message: 'OTP resent successfully!', expiresIn: 600 });
   } catch (err) {
     return fail(c, `Failed to resend OTP: ${err.message}`, 500);
   }
