@@ -22,6 +22,11 @@ import uploadRoutes from './routes/upload.js';
 import couponRoutes from './routes/coupons.js';
 import shippingRoutes from './routes/shipping.js';
 import otpRoutes from './routes/otp.js';
+import addressRoutes from './routes/addresses.js';
+import userCardsRoutes from './routes/userCards.js';
+import userUpiRoutes from './routes/userUpi.js';
+import reviewRoutes from './routes/reviews.js';
+import orderHistoryRoutes from './routes/orderHistory.js';
 
 
 
@@ -99,6 +104,12 @@ app.route('/api/upload', uploadRoutes);
 app.route('/api/coupons', couponRoutes);
 app.route('/api/shipping', shippingRoutes);
 app.route('/api/otp', otpRoutes);
+app.route('/api/users/addresses', addressRoutes);
+app.route('/api/users/cards', userCardsRoutes);
+app.route('/api/users/upi', userUpiRoutes);
+app.route('/api/reviews', reviewRoutes);
+app.route('/api/orders/user', orderHistoryRoutes);
+
 
 /* --------------------------------------------------------------------- */
 /* 404 + global error handling                                            */
