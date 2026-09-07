@@ -209,14 +209,88 @@ orders.get('/user', authMiddleware, async (c) => {
     const { results } = await c.env.DB.prepare(
       'SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC'
     ).bind(user.id).all();
-    
-    return ok(c, results || []);
+
+    const userOrders = results || [];
+
+    // ✅ FIX: frontend (MyOrders.jsx) needs order.items on every order in
+    // this list (to check review-eligibility per item) — previously this
+    // route only returned the bare order rows with no items at all.
+    if (userOrders.length > 0) {
+      const orderIds = userOrders.map((o) => o.id);
+      const placeholders = orderIds.map(() => '?').join(',');
+      const { results: allItems } = await c.env.DB.prepare(
+        `SELECT * FROM order_items WHERE order_id IN (${placeholders})`
+      ).bind(...orderIds).all();
+
+      const itemsByOrder = {};
+      for (const item of allItems || []) {
+        (itemsByOrder[item.order_id] ||= []).push(item);
+      }
+      for (const order of userOrders) {
+        order.items = itemsByOrder[order.id] || [];
+      }
+    }
+
+    return ok(c, userOrders);
   } catch (err) {
     return fail(c, `Failed to load orders: ${err.message}`, 500);
   }
 });
 
+// PUT/PATCH /api/orders/:id/cancel - Customer cancels their own pending order
+// (Frontend Profile.jsx & MyOrders.jsx hit this path with different HTTP
+// methods (PUT vs PATCH) — registering both keeps every caller working
+// instead of chasing down each page's method choice one by one.)
+const cancelOrderHandler = async (c) => {
+  try {
+    const user = c.get('user');
+    const id = c.req.param('id');
+
+    const order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    if (!order) return fail(c, 'Order not found.', 404);
+
+    if (order.user_id !== user.id && user.role !== 'admin') {
+      return fail(c, 'You do not have access to this order.', 403);
+    }
+    if (order.status !== 'pending' && order.status !== 'confirmed') {
+      return fail(c, 'Only pending or confirmed orders can be cancelled.', 400);
+    }
+
+    await c.env.DB.prepare(
+      `UPDATE orders SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?`
+    ).bind(id).run();
+
+    const updated = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    return ok(c, updated);
+  } catch (err) {
+    return fail(c, `Failed to cancel order: ${err.message}`, 500);
+  }
+};
+orders.put('/:id/cancel', authMiddleware, cancelOrderHandler);
+orders.patch('/:id/cancel', authMiddleware, cancelOrderHandler);
+
+/* --------------------------------------------------------------------- */
+/* Admin                                                                  */
+/* --------------------------------------------------------------------- */
+
+// GET /api/orders/all - List ALL orders for Admin Dashboard
+// ⚠️ IMPORTANT: this MUST be registered before GET /:id, otherwise ":id"
+// greedily matches the literal word "all" as an order id and this route
+// never gets hit (this was the exact cause of the reported 404).
+orders.get('/all', authMiddleware, requireAdmin, async (c) => {
+  try {
+    const { results } = await c.env.DB.prepare(
+      'SELECT * FROM orders ORDER BY created_at DESC'
+    ).all();
+    return ok(c, results || []);
+  } catch (err) {
+    return fail(c, `Failed to load all orders: ${err.message}`, 500);
+  }
+});
+
 // GET /api/orders/:id
+// ⚠️ Any new static routes (e.g. /api/orders/something) must be added
+// ABOVE this line, never below — otherwise they'll be shadowed the same way.
 orders.get('/:id', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -237,22 +311,6 @@ orders.get('/:id', authMiddleware, async (c) => {
     return ok(c, { ...order, items: items || [] });
   } catch (err) {
     return fail(c, `Failed to load order: ${err.message}`, 500);
-  }
-});
-
-/* --------------------------------------------------------------------- */
-/* Admin                                                                  */
-/* --------------------------------------------------------------------- */
-
-// GET /api/orders/all - List ALL orders for Admin Dashboard
-orders.get('/all', authMiddleware, requireAdmin, async (c) => {
-  try {
-    const { results } = await c.env.DB.prepare(
-      'SELECT * FROM orders ORDER BY created_at DESC'
-    ).all();
-    return ok(c, results || []);
-  } catch (err) {
-    return fail(c, `Failed to load all orders: ${err.message}`, 500);
   }
 });
 
