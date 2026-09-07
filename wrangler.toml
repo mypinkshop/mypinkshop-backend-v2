@@ -1,0 +1,42 @@
+name = "mypinkshop-backend-v2"
+main = "src/index.js"
+compatibility_date = "2024-12-18"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mypinkshop-db"
+database_id = "00343abb-2eb1-4010-84a5-f5608523de3d"
+
+# ⚠️ SECURITY FIX: JWT_SECRET and any password/API-key style values must
+# NEVER live in [vars] because wrangler.toml is committed to git in plain
+# text — anyone with repo access (or who finds this on GitHub) could forge
+# login tokens or send email as your domain. Only NON-secret values belong
+# here. Secrets are set via the CLI/dashboard instead (see below) and are
+# encrypted at rest; they never appear in your repo or `wrangler.toml`.
+[vars]
+FRONTEND_URL = "https://mypinkshop.com"
+FROM_EMAIL = "noreply@mypinkshop.com"
+APP_NAME = "mypinkshop"
+# ZOHO_FROM_EMAIL is not sensitive (it's just an address), so it can stay
+# here. Set it to the actual mailbox you're sending OTP/reset emails from.
+ZOHO_FROM_EMAIL = "noreply@mypinkshop.com"
+
+# ---------------------------------------------------------------------------
+# Run these once (locally, and again for --env production if you use one):
+#
+#   wrangler secret put JWT_SECRET
+#   wrangler secret put ZOHO_CLIENT_ID
+#   wrangler secret put ZOHO_CLIENT_SECRET
+#   wrangler secret put ZOHO_REFRESH_TOKEN
+#   wrangler secret put ZOHO_ACCOUNT_ID
+#
+# These 5 secrets were MISSING entirely before this fix — that is the exact
+# reason /api/otp/send and /api/auth/forgot-password were failing with a
+# Zoho error. Get the Zoho OAuth values from https://api-console.zoho.in
+# (Self Client) and ZOHO_ACCOUNT_ID from a GET to
+# https://mail.zoho.in/api/accounts using a valid Zoho session/token.
+#
+# You must also rotate JWT_SECRET (generate a new random 32+ byte string)
+# since the old one leaked in this repo's git history — anyone who has ever
+# cloned this repo could otherwise forge valid login tokens for any user.
+# ---------------------------------------------------------------------------
