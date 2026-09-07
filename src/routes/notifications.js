@@ -111,4 +111,18 @@ notifications.delete('/:id', authMiddleware, async (c) => {
   }
 });
 
+// GET /api/notifications/unread-count - Unread notification count
+notifications.get('/unread-count', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user');
+    const countRow = await c.env.DB.prepare(
+      'SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0'
+    ).bind(user.id).first();
+    
+    return ok(c, { count: countRow?.count || 0 });
+  } catch (err) {
+    return fail(c, `Failed to load unread count: ${err.message}`, 500);
+  }
+});
+
 export default notifications;
