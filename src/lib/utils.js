@@ -18,11 +18,13 @@ export function genId(prefix = '') {
   return prefix ? `${prefix}_${random}` : random;
 }
 
+// ✅ ORDER NUMBER: MPS-XX-XXXX-XXXXXX style
 export function genOrderNumber() {
   const now = new Date();
-  const datePart = now.toISOString().slice(0, 10).replace(/-/g, '');
-  const randomPart = Math.floor(1000 + Math.random() * 9000);
-  return `ORD-${datePart}-${randomPart}`;
+  const month = String(now.getMonth() + 1).padStart(2, '0'); // 2 digit month (01-12)
+  const randomPart1 = Math.floor(1000 + Math.random() * 9000).toString(); // 4 digit
+  const randomPart2 = Math.floor(100000 + Math.random() * 900000).toString(); // 6 digit
+  return `MPS-${month}-${randomPart1}-${randomPart2}`;
 }
 
 export function parsePagination(c) {
