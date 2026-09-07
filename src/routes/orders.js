@@ -8,16 +8,15 @@ const orders = new Hono();
 const VALID_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'];
 
 /* --------------------------------------------------------------------- */
-/* Customer                                                               */
+/* Customer                                                             */
 /* --------------------------------------------------------------------- */
 
-// ✅ POST /api/orders - Create new order (Frontend Checkout.js isko hit karta hai)
+// ✅ POST /api/orders - Create new order
 orders.post('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
     const body = await c.req.json().catch(() => ({}));
     
-    // Validation
     if (!body.items || !Array.isArray(body.items) || body.items.length === 0) {
       return fail(c, 'items must be a non-empty array.', 400);
     }
@@ -28,7 +27,6 @@ orders.post('/', authMiddleware, async (c) => {
     const id = genId('order');
     const orderNumber = genOrderNumber();
     
-    // Calculate totals
     let subtotal = 0;
     for (const item of body.items) {
       subtotal += (item.price || 0) * (item.quantity || 1);
@@ -38,12 +36,11 @@ orders.post('/', authMiddleware, async (c) => {
     const shippingAmount = subtotal >= 499 ? 0 : 49;
     const totalAmount = subtotal + taxAmount + shippingAmount;
 
-    // ✅ Order Insert
     await c.env.DB.prepare(
       `INSERT INTO orders 
         (id, user_id, order_number, status, subtotal, tax_amount, shipping_amount, discount_amount,
          total_amount, payment_status, payment_method, shipping_address, created_at, updated_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
     )
       .bind(
         id,
@@ -59,7 +56,6 @@ orders.post('/', authMiddleware, async (c) => {
       )
       .run();
 
-    // ✅ Order Items Insert
     for (const item of body.items) {
       const itemId = genId('oi');
       await c.env.DB.prepare(
@@ -91,7 +87,6 @@ orders.post('/create', authMiddleware, async (c) => {
       return fail(c, 'shippingAddress is required.', 400);
     }
 
-    // Resolve product prices from the DB (never trust client-supplied prices).
     let subtotal = 0;
     const resolvedItems = [];
 
@@ -130,7 +125,7 @@ orders.post('/create', authMiddleware, async (c) => {
       `INSERT INTO orders
         (id, user_id, order_number, status, subtotal, tax_amount, shipping_amount, discount_amount,
          total_amount, payment_status, payment_method, shipping_address, created_at, updated_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?, 0, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, 0, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
     )
       .bind(
         orderId,
@@ -159,7 +154,6 @@ orders.post('/create', authMiddleware, async (c) => {
         .run();
     }
 
-    // Clear whatever was ordered out of the user's cart.
     for (const item of resolvedItems) {
       await c.env.DB.prepare('DELETE FROM cart WHERE user_id = ? AND product_id = ?')
         .bind(user.id, item.productId)
@@ -201,7 +195,6 @@ orders.get('/my-orders', authMiddleware, async (c) => {
   }
 });
 
-
 // GET /api/orders/user - User ke apne saare orders (With Product Image JOIN Fix)
 orders.get('/user', authMiddleware, async (c) => {
   try {
@@ -216,7 +209,6 @@ orders.get('/user', authMiddleware, async (c) => {
       const orderIds = userOrders.map((o) => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
       
-      // ✅ FIX: JOIN with products table to fetch real product images (oi.*, p.image as product_image)
       const { results: allItems } = await c.env.DB.prepare(
         `SELECT oi.*, p.image as product_image, p.thumbnail as product_thumbnail 
          FROM order_items oi 
@@ -226,7 +218,6 @@ orders.get('/user', authMiddleware, async (c) => {
 
       const itemsByOrder = {};
       for (const item of allItems || []) {
-        // Map product image cleanly so frontend gets `item.image`
         const normalizedItem = {
           ...item,
           image: item.image || item.product_image || item.product_thumbnail || null
@@ -238,7 +229,6 @@ orders.get('/user', authMiddleware, async (c) => {
       }
     }
 
-    // Date formatting fix
     const formattedOrders = (userOrders || []).map(order => {
       const createdAt = order.created_at;
       const formattedDate = createdAt 
@@ -257,16 +247,7 @@ orders.get('/user', authMiddleware, async (c) => {
   }
 });
 
-    return ok(c, formattedOrders);
-  } catch (err) {
-    return fail(c, `Failed to load orders: ${err.message}`, 500);
-  }
-});
-
-// PUT/PATCH /api/orders/:id/cancel - Customer cancels their own pending order
-// (Frontend Profile.jsx & MyOrders.jsx hit this path with different HTTP
-// methods (PUT vs PATCH) — registering both keeps every caller working
-// instead of chasing down each page's method choice one by one.)
+// PUT/PATCH /api/orders/:id/cancel
 const cancelOrderHandler = async (c) => {
   try {
     const user = c.get('user');
@@ -296,13 +277,9 @@ orders.put('/:id/cancel', authMiddleware, cancelOrderHandler);
 orders.patch('/:id/cancel', authMiddleware, cancelOrderHandler);
 
 /* --------------------------------------------------------------------- */
-/* Admin                                                                  */
+/* Admin                                                                */
 /* --------------------------------------------------------------------- */
 
-// GET /api/orders/all - List ALL orders for Admin Dashboard
-// ⚠️ IMPORTANT: this MUST be registered before GET /:id, otherwise ":id"
-// greedily matches the literal word "all" as an order id and this route
-// never gets hit (this was the exact cause of the reported 404).
 orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   try {
     const { results } = await c.env.DB.prepare(
@@ -314,9 +291,6 @@ orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// GET /api/orders/:id
-// ⚠️ Any new static routes (e.g. /api/orders/something) must be added
-// ABOVE this line, never below — otherwise they'll be shadowed the same way.
 orders.get('/:id', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -325,7 +299,6 @@ orders.get('/:id', authMiddleware, async (c) => {
     const order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
     if (!order) return fail(c, 'Order not found.', 404);
 
-    // Customers may only view their own orders; admins may view any order.
     if (order.user_id !== user.id && user.role !== 'admin') {
       return fail(c, 'You do not have access to this order.', 403);
     }
@@ -340,7 +313,6 @@ orders.get('/:id', authMiddleware, async (c) => {
   }
 });
 
-// GET /api/orders  - list all orders (admin)
 orders.get('/', authMiddleware, requireAdmin, async (c) => {
   try {
     const { page, limit, offset } = parsePagination(c);
@@ -376,7 +348,6 @@ orders.get('/', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// PUT /api/orders/:id/status (admin)
 orders.put('/:id/status', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
