@@ -108,7 +108,6 @@ app.route('/api/users/addresses', addressRoutes);
 app.route('/api/users/cards', userCardsRoutes);
 app.route('/api/users/upi', userUpiRoutes);
 app.route('/api/reviews', reviewRoutes);
-app.route('/api/orders/user', orderHistoryRoutes);
 
 
 /* --------------------------------------------------------------------- */
