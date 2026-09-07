@@ -202,7 +202,7 @@ orders.get('/my-orders', authMiddleware, async (c) => {
 });
 
 
-// GET /api/orders/user
+// GET /api/orders/user - User ke apne saare orders
 orders.get('/user', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -212,7 +212,9 @@ orders.get('/user', authMiddleware, async (c) => {
 
     const userOrders = results || [];
 
-    // ✅ 1. Items ko har order ke saath lao
+    // ✅ FIX: frontend (MyOrders.jsx) needs order.items on every order in
+    // this list (to check review-eligibility per item) — previously this
+    // route only returned the bare order rows with no items at all.
     if (userOrders.length > 0) {
       const orderIds = userOrders.map((o) => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
@@ -229,21 +231,9 @@ orders.get('/user', authMiddleware, async (c) => {
       }
     }
 
-    // ✅ 2. Har order ke item ke saath product ki image lao
-    const finalOrders = (userOrders || []).map(order => {
-      const itemsWithImages = (order.items || []).map(item => {
-        // Product ki image DB se nikaalo
-        const product = await c.env.DB.prepare(
-          'SELECT images FROM products WHERE id = ?'
-        ).bind(item.product_id).first();
-        
-        return {
-          ...item,
-          image: product?.images ? JSON.parse(product.images)[0] : null // ✅ Image add ki
-        };
-      });
-
-      // ✅ 3. Order ki date ko ISO format mein bhejo (frontend isse parse karega)
+    // ✅ FIX 2: order_date and product image ke liye
+    const formattedOrders = (userOrders || []).map(order => {
+      // Properly format date
       const createdAt = order.created_at;
       const formattedDate = createdAt 
         ? new Date(createdAt.replace(' ', 'T') + 'Z').toISOString() 
@@ -251,17 +241,15 @@ orders.get('/user', authMiddleware, async (c) => {
 
       return {
         ...order,
-        createdAt: formattedDate, // ✅ Frontend ko 'createdAt' mil jayega
-        orderId: order.order_number || order.id, // ✅ Order ID frontend ko sahi milega
-        items: itemsWithImages
+        created_at: formattedDate, // Frontend ko ISO format milega
+        items: (order.items || []).map(item => {
+          return {
+            ...item,
+            image: item.image || null // Frontend isko item.image ke roop mein use karega
+          };
+        })
       };
     });
-
-    return ok(c, finalOrders);
-  } catch (err) {
-    return fail(c, `Failed to load orders: ${err.message}`, 500);
-  }
-});
 
     return ok(c, formattedOrders);
   } catch (err) {
