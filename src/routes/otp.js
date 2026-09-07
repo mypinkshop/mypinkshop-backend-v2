@@ -1,6 +1,7 @@
 // src/routes/otp.js
 import { Hono } from 'hono';
 import { fail, genId } from '../lib/utils.js';
+import { signJWT } from '../lib/jwt.js';
 
 const otp = new Hono();
 
@@ -17,10 +18,10 @@ const generateOTP = () => {
  *
  * Required secrets (wrangler secret put <NAME>):
  *   ZOHO_CLIENT_ID       - from the Self Client in Zoho API Console
- *   ZOHO_CLIENT_SECRET    - from the Self Client in Zoho API Console
- *   ZOHO_REFRESH_TOKEN    - obtained once via the authorization_code exchange
- *   ZOHO_ACCOUNT_ID       - your Zoho Mail accountId (from GET /api/accounts)
- *   ZOHO_FROM_EMAIL       - the mailbox you're sending from, e.g. noreply@mypinkshop.com
+ *   ZOHO_CLIENT_SECRET   - from the Self Client in Zoho API Console
+ *   ZOHO_REFRESH_TOKEN   - obtained once via the authorization_code exchange
+ *   ZOHO_ACCOUNT_ID      - your Zoho Mail accountId (from GET /api/accounts)
+ *   ZOHO_FROM_EMAIL      - the mailbox you're sending from, e.g. noreply@mypinkshop.com
  *
  * If your Zoho login is on a different data center (US/.com, EU/.eu),
  * change ZOHO_ACCOUNTS_HOST / ZOHO_MAIL_HOST below to match.
@@ -150,7 +151,7 @@ otp.post('/verify', async (c) => {
 
     await c.env.DB.prepare('UPDATE otp_verifications SET is_verified = 1 WHERE id = ?').bind(otpRecord.id).run();
 
-    const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
+    const existingUser = await c.env.DB.prepare('SELECT id, name, role FROM users WHERE email = ?').bind(cleanEmail).first();
     let userId = existingUser ? existingUser.id : null;
 
     if (!existingUser) {
@@ -160,20 +161,23 @@ otp.post('/verify', async (c) => {
       ).bind(userId, cleanEmail.split('@')[0], cleanEmail, '').run();
     }
 
-    // Generate a simple auth token or success payload matching frontend expectations
-    const token = genId('tok');
+    // Issue a real, verifiable JWT
+    const userName = existingUser?.name || cleanEmail.split('@')[0];
+    const userRole = existingUser?.role || 'customer';
+    const token = await signJWT(
+      { id: userId, email: cleanEmail, role: userRole, name: userName },
+      c.env.JWT_SECRET
+    );
 
-    // NOTE: returned as a flat object (not wrapped via ok()) because the
-    // frontend reads o.token / o.user directly off the top-level response.
     return c.json({
       success: true,
       message: 'OTP verified successfully!',
       token: token,
       user: {
         _id: userId,
-        name: cleanEmail.split('@')[0],
+        name: userName,
         email: cleanEmail,
-        role: 'customer',
+        role: userRole,
       },
     });
   } catch (err) {
