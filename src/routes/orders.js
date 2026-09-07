@@ -202,7 +202,7 @@ orders.get('/my-orders', authMiddleware, async (c) => {
 });
 
 
-// GET /api/orders/user - User ke apne saare orders
+// GET /api/orders/user - User ke apne saare orders (With Product Image JOIN Fix)
 orders.get('/user', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -212,28 +212,34 @@ orders.get('/user', authMiddleware, async (c) => {
 
     const userOrders = results || [];
 
-    // ✅ FIX: frontend (MyOrders.jsx) needs order.items on every order in
-    // this list (to check review-eligibility per item) — previously this
-    // route only returned the bare order rows with no items at all.
     if (userOrders.length > 0) {
       const orderIds = userOrders.map((o) => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
+      
+      // ✅ FIX: JOIN with products table to fetch real product images (oi.*, p.image as product_image)
       const { results: allItems } = await c.env.DB.prepare(
-        `SELECT * FROM order_items WHERE order_id IN (${placeholders})`
+        `SELECT oi.*, p.image as product_image, p.thumbnail as product_thumbnail 
+         FROM order_items oi 
+         LEFT JOIN products p ON oi.product_id = p.id 
+         WHERE oi.order_id IN (${placeholders})`
       ).bind(...orderIds).all();
 
       const itemsByOrder = {};
       for (const item of allItems || []) {
-        (itemsByOrder[item.order_id] ||= []).push(item);
+        // Map product image cleanly so frontend gets `item.image`
+        const normalizedItem = {
+          ...item,
+          image: item.image || item.product_image || item.product_thumbnail || null
+        };
+        (itemsByOrder[item.order_id] ||= []).push(normalizedItem);
       }
       for (const order of userOrders) {
         order.items = itemsByOrder[order.id] || [];
       }
     }
 
-    // ✅ FIX 2: order_date and product image ke liye
+    // Date formatting fix
     const formattedOrders = (userOrders || []).map(order => {
-      // Properly format date
       const createdAt = order.created_at;
       const formattedDate = createdAt 
         ? new Date(createdAt.replace(' ', 'T') + 'Z').toISOString() 
@@ -241,15 +247,15 @@ orders.get('/user', authMiddleware, async (c) => {
 
       return {
         ...order,
-        created_at: formattedDate, // Frontend ko ISO format milega
-        items: (order.items || []).map(item => {
-          return {
-            ...item,
-            image: item.image || null // Frontend isko item.image ke roop mein use karega
-          };
-        })
+        created_at: formattedDate,
       };
     });
+
+    return ok(c, formattedOrders);
+  } catch (err) {
+    return fail(c, `Failed to load orders: ${err.message}`, 500);
+  }
+});
 
     return ok(c, formattedOrders);
   } catch (err) {
