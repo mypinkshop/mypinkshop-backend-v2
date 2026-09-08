@@ -27,6 +27,7 @@ import userCardsRoutes from './routes/userCards.js';
 import userUpiRoutes from './routes/userUpi.js';
 import reviewRoutes from './routes/reviews.js';
 import returnsRoutes from './routes/returns.js'; // ⬅️ NEW: return/refund requests
+import categoriesRouter from './routes/categories';
 
 
 
@@ -122,6 +123,7 @@ app.route('/api/reviews', reviewRoutes);
 // approve/reject — same routes app, two prefixes, both work.
 app.route('/api/returns', returnsRoutes);
 app.route('/api/orders/returns', returnsRoutes);
+app.route('/api/categories', categoriesRouter);
 
 
 /* --------------------------------------------------------------------- */
