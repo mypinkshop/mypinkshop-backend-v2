@@ -38,20 +38,26 @@ banners.get('/', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// POST /api/banners (Direct support for frontend calling /api/banners)
+// POST /api/banners (Supports FormData & JSON for banner creation)
 banners.post('/', authMiddleware, requireAdmin, async (c) => {
   try {
-    const body = await c.req.json().catch(() => ({}));
-    const {
-      title,
-      subtitle = '',
-      buttonText = 'Shop Now',
-      link = '/shop',
-      image = '',
-      imageKey = '',
-      order = 0,
-      active = true,
-    } = body;
+    let body = {};
+    const contentType = c.req.header('content-type') || '';
+    
+    if (contentType.includes('form')) {
+      body = await c.req.parseBody();
+    } else {
+      body = await c.req.json().catch(() => ({}));
+    }
+
+    const title = body.title;
+    const subtitle = body.subtitle || '';
+    const buttonText = body.buttonText || 'Shop Now';
+    const link = body.link || '/shop';
+    const image = body.image || '';
+    const imageKey = body.imageKey || '';
+    const order = parseInt(body.order) || 0;
+    const active = body.active === 'false' || body.active === false ? 0 : 1;
 
     if (!title) return fail(c, 'title is required.', 400);
 
@@ -62,7 +68,7 @@ banners.post('/', authMiddleware, requireAdmin, async (c) => {
         (id, title, subtitle, button_text, link, image, image_key, sort_order, active, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
     )
-      .bind(id, title, subtitle, buttonText, link, image, imageKey, order, active ? 1 : 0)
+      .bind(id, title, subtitle, buttonText, link, image, imageKey, order, active)
       .run();
 
     const created = await c.env.DB.prepare('SELECT * FROM banners WHERE id = ?').bind(id).first();
@@ -75,17 +81,23 @@ banners.post('/', authMiddleware, requireAdmin, async (c) => {
 // POST /api/banners/create (Alias for backward compatibility)
 banners.post('/create', authMiddleware, requireAdmin, async (c) => {
   try {
-    const body = await c.req.json().catch(() => ({}));
-    const {
-      title,
-      subtitle = '',
-      buttonText = 'Shop Now',
-      link = '/shop',
-      image = '',
-      imageKey = '',
-      order = 0,
-      active = true,
-    } = body;
+    let body = {};
+    const contentType = c.req.header('content-type') || '';
+    
+    if (contentType.includes('form')) {
+      body = await c.req.parseBody();
+    } else {
+      body = await c.req.json().catch(() => ({}));
+    }
+
+    const title = body.title;
+    const subtitle = body.subtitle || '';
+    const buttonText = body.buttonText || 'Shop Now';
+    const link = body.link || '/shop';
+    const image = body.image || '';
+    const imageKey = body.imageKey || '';
+    const order = parseInt(body.order) || 0;
+    const active = body.active === 'false' || body.active === false ? 0 : 1;
 
     if (!title) return fail(c, 'title is required.', 400);
 
@@ -96,7 +108,7 @@ banners.post('/create', authMiddleware, requireAdmin, async (c) => {
         (id, title, subtitle, button_text, link, image, image_key, sort_order, active, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
     )
-      .bind(id, title, subtitle, buttonText, link, image, imageKey, order, active ? 1 : 0)
+      .bind(id, title, subtitle, buttonText, link, image, imageKey, order, active)
       .run();
 
     const created = await c.env.DB.prepare('SELECT * FROM banners WHERE id = ?').bind(id).first();
@@ -113,7 +125,15 @@ banners.put('/:id', authMiddleware, requireAdmin, async (c) => {
     const existing = await c.env.DB.prepare('SELECT * FROM banners WHERE id = ?').bind(id).first();
     if (!existing) return fail(c, 'Banner not found.', 404);
 
-    const body = await c.req.json().catch(() => ({}));
+    let body = {};
+    const contentType = c.req.header('content-type') || '';
+    
+    if (contentType.includes('form')) {
+      body = await c.req.parseBody();
+    } else {
+      body = await c.req.json().catch(() => ({}));
+    }
+
     const merged = {
       title: body.title ?? existing.title,
       subtitle: body.subtitle ?? existing.subtitle,
@@ -121,8 +141,8 @@ banners.put('/:id', authMiddleware, requireAdmin, async (c) => {
       link: body.link ?? existing.link,
       image: body.image ?? existing.image,
       image_key: body.imageKey ?? existing.image_key,
-      sort_order: body.order ?? existing.sort_order,
-      active: body.active !== undefined ? (body.active ? 1 : 0) : existing.active,
+      sort_order: body.order !== undefined ? parseInt(body.order) : existing.sort_order,
+      active: body.active !== undefined ? (body.active === 'false' || body.active === false ? 0 : 1) : existing.active,
     };
 
     await c.env.DB.prepare(
