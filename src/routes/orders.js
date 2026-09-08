@@ -1,14 +1,14 @@
 // src/routes/orders.js
 import { Hono } from 'hono';
 import { authMiddleware, requireAdmin } from './auth.js';
-import { ok, fail, genId, genOrderNumber, parsePagination } from '../lib/utils.js';
+import { ok, fail, genId, genOrderNumber, parsePagination, safeJsonArray } from '../lib/utils.js';
 
 const orders = new Hono();
 
 const VALID_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'];
 
 /* --------------------------------------------------------------------- */
-/* Customer                                                               */
+/* Customer                                                             */
 /* --------------------------------------------------------------------- */
 
 // ✅ POST /api/orders - Create new order (Frontend Checkout.js isko hit karta hai)
@@ -43,7 +43,7 @@ orders.post('/', authMiddleware, async (c) => {
       `INSERT INTO orders 
         (id, user_id, order_number, status, subtotal, tax_amount, shipping_amount, discount_amount,
          total_amount, payment_status, payment_method, shipping_address, created_at, updated_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
     )
       .bind(
         id,
@@ -130,7 +130,7 @@ orders.post('/create', authMiddleware, async (c) => {
       `INSERT INTO orders
         (id, user_id, order_number, status, subtotal, tax_amount, shipping_amount, discount_amount,
          total_amount, payment_status, payment_method, shipping_address, created_at, updated_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?, 0, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, 0, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
     )
       .bind(
         orderId,
@@ -243,9 +243,10 @@ orders.get('/user', authMiddleware, async (c) => {
         ...order,
         created_at: formattedDate, // Frontend ko ISO format milega
         items: (order.items || []).map(item => {
+          const images = safeJsonArray(item.product_images);
           return {
             ...item,
-            image: item.image || null // Frontend isko item.image ke roop mein use karega
+            image: item.image || images[0] || null // Frontend isko item.image ke roop mein use karega
           };
         })
       };
@@ -290,7 +291,7 @@ orders.put('/:id/cancel', authMiddleware, cancelOrderHandler);
 orders.patch('/:id/cancel', authMiddleware, cancelOrderHandler);
 
 /* --------------------------------------------------------------------- */
-/* Admin                                                                  */
+/* Admin                                                                */
 /* --------------------------------------------------------------------- */
 
 // GET /api/orders/all - List ALL orders for Admin Dashboard
