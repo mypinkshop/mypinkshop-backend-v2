@@ -98,10 +98,9 @@ shipping.post('/check-delivery', async (c) => {
           deliverable = true;
           const couriers = srData.data.available_courier_companies;
           
-          // Find the courier with real dynamic delivery days (or fallback to first)
           let bestCourier = couriers[0];
           for (const courier of couriers) {
-            if (courier.estimated_delivery_days && parseInt(courier.estimated_delivery_days, 10) > 0) {
+            if (courier.estimated_delivery_days) {
               bestCourier = courier;
               break;
             }
@@ -111,11 +110,17 @@ shipping.post('/check-delivery', async (c) => {
             shippingCharge = bestCourier.rate || standardRate;
           }
           
-          if (bestCourier.estimated_delivery_days) {
-            const parsedDays = parseInt(bestCourier.estimated_delivery_days, 10) || 3;
-            // Dynamic calculation based on actual distance/days returned by Shiprocket
-            estimatedDaysMin = Math.max(2, parsedDays - 1);
-            estimatedDaysMax = parsedDays + 2;
+          // 🔍 Robust Range Parser for Delivery Days (Handles "3-5", "5-7", or "3")
+          const rawDays = String(bestCourier.estimated_delivery_days || '3');
+          console.log(`[Shiprocket] Pincode: ${pincode} | Raw Days: ${rawDays}`);
+
+          const matches = rawDays.match(/\d+/g);
+          if (matches && matches.length > 0) {
+            const minParsed = parseInt(matches[0], 10);
+            const maxParsed = matches.length > 1 ? parseInt(matches[1], 10) : minParsed + 2;
+            
+            estimatedDaysMin = Math.max(1, minParsed);
+            estimatedDaysMax = Math.max(estimatedDaysMin + 1, maxParsed);
           }
         } else {
           deliverable = false;
