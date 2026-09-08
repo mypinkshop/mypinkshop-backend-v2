@@ -9,6 +9,7 @@ const reviews = new Hono();
 reviews.get('/my-reviews', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
+    if (!user) return fail(c, 'Unauthorized', 401);
     
     const { results } = await c.env.DB.prepare(
       `SELECT r.*, p.name as product_name, p.images as product_image
@@ -24,12 +25,36 @@ reviews.get('/my-reviews', authMiddleware, async (c) => {
   }
 });
 
+// ✅ GET /api/reviews/can-review/:productId - Check if user can review this product
+reviews.get('/can-review/:productId', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user');
+    const productId = c.req.param('productId');
+    
+    if (!user) {
+      return ok(c, { canReview: false, hasReviewed: false });
+    }
+    
+    const existingReview = await c.env.DB.prepare(
+      'SELECT id FROM reviews WHERE user_id = ? AND product_id = ?'
+    ).bind(user.id, productId).first();
+    
+    return ok(c, {
+      canReview: !existingReview,
+      hasReviewed: !!existingReview
+    });
+  } catch (err) {
+    return fail(c, `Failed to check review eligibility: ${err.message}`, 500);
+  }
+});
+
 // ✅ POST /api/reviews - Naya review submit karo
 reviews.post('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
+    if (!user) return fail(c, 'Unauthorized', 401);
+
     const body = await c.req.json().catch(() => ({}));
-    
     const { productId, rating, review } = body;
     
     if (!productId) {
@@ -78,6 +103,8 @@ reviews.post('/', authMiddleware, async (c) => {
 reviews.delete('/:id', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
+    if (!user) return fail(c, 'Unauthorized', 401);
+
     const id = c.req.param('id');
     
     const result = await c.env.DB.prepare(
