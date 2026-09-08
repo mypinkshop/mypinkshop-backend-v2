@@ -30,13 +30,10 @@ import returnsRoutes from './routes/returns.js'; // ⬅️ NEW: return/refund re
 import categoriesRouter from './routes/categories';
 import adminPaymentsRouter from './routes/adminPayments';
 
-
-
-
 const app = new Hono();
 
 /* --------------------------------------------------------------------- */
-/* Global middleware                                                      */
+/* Global middleware                                                     */
 /* --------------------------------------------------------------------- */
 
 app.use('*', prettyJSON());
@@ -52,8 +49,26 @@ app.use(
   })
 );
 
+// ✅ Global Cache Middleware (Amazon-style automatic CDN/Browser caching for public GET requests)
+app.use('/api/*', async (c, next) => {
+  await next();
+  
+  // Sirf GET requests aur public APIs par cache lagao (Admin, Auth, Cart, Orders, etc. ko chhod kar)
+  const path = c.req.path;
+  const isGet = c.req.method === 'GET';
+  const isAdminOrPrivate = path.includes('/admin') || path.includes('/auth') || path.includes('/cart') || path.includes('/orders') || path.includes('/wishlist');
+
+  if (isGet && !isAdminOrPrivate) {
+    // 60 seconds public cache, 30 seconds stale-while-revalidate for lightning-fast background sync
+    c.header('Cache-Control', 'public, max-age=60, stale-while-revalidate=30');
+  } else {
+    // Non-GET or private requests hamesha fresh rahengi (No cache)
+    c.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+  }
+});
+
 /* --------------------------------------------------------------------- */
-/* Health check / root                                                    */
+/* Health check / root                                                   */
 /* --------------------------------------------------------------------- */
 
 app.get('/', (c) =>
@@ -86,16 +101,8 @@ app.get('/api/health', async (c) => {
 });
 
 /* --------------------------------------------------------------------- */
-/* Route mounting                                                         */
+/* Route mounting                                                        */
 /* --------------------------------------------------------------------- */
-//
-// ⚠️ ORDER MATTERS: any /api/users/<something> route that needs to be
-// reached by a NON-admin (addresses, cards, upi — a customer's own saved
-// data) must be mounted BEFORE the generic '/api/users' mount below. That
-// generic mount includes a GET '/:id' route guarded by requireAdmin (for
-// admins looking up any user by id) — if it's registered first, a request
-// to /api/users/addresses matches it as id="addresses" and gets rejected
-// with 403 before ever reaching the real addresses/cards/upi routes.
 
 app.route('/api/users/addresses', addressRoutes);
 app.route('/api/users/cards', userCardsRoutes);
@@ -119,17 +126,13 @@ app.route('/api/coupons', couponRoutes);
 app.route('/api/shipping', shippingRoutes);
 app.route('/api/otp', otpRoutes);
 app.route('/api/reviews', reviewRoutes);
-// ⬅️ NEW: mounted at BOTH paths because AdminOrders.jsx calls
-// /api/orders/returns/all for the list, but /api/returns/:id/status for
-// approve/reject — same routes app, two prefixes, both work.
 app.route('/api/returns', returnsRoutes);
 app.route('/api/orders/returns', returnsRoutes);
 app.route('/api/categories', categoriesRouter);
 app.route('/api/admin', adminPaymentsRouter);
 
-
 /* --------------------------------------------------------------------- */
-/* 404 + global error handling                                            */
+/* 404 + global error handling                                           */
 /* --------------------------------------------------------------------- */
 
 app.notFound((c) =>
