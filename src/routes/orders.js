@@ -6,9 +6,86 @@ import { ok, fail, genId, genOrderNumber, parsePagination, safeJsonArray } from 
 const orders = new Hono();
 
 const VALID_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'];
+const SHIPROCKET_BASE_URL = 'https://apiv2.shiprocket.in/v1/external';
+
+// Helper: Get Shiprocket Token
+async function getShiprocketToken(env) {
+  try {
+    const email = env?.SHIPROCKET_EMAIL;
+    const password = env?.SHIPROCKET_PASSWORD;
+    if (!email || !password) return null;
+
+    const response = await fetch(`${SHIPROCKET_BASE_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+
+    const data = await response.json();
+    return data.token || null;
+  } catch (error) {
+    console.error('Shiprocket Auth Error:', error);
+    return null;
+  }
+}
+
+// Helper: Push Order to Shiprocket
+async function pushOrderToShiprocket(env, order, items, address, userEmail) {
+  try {
+    const token = await getShiprocketToken(env);
+    if (!token) {
+      console.warn('Shiprocket token skipped: credentials missing or auth failed.');
+      return;
+    }
+
+    const parsedAddress = typeof address === 'string' ? JSON.parse(address) : address;
+
+    const payload = {
+      order_id: order.order_number,
+      order_date: new Date(order.created_at || Date.now()).toISOString().replace('T', ' ').substring(0, 19),
+      pickup_location: env?.SHIPROCKET_PICKUP_LOCATION || 'Primary',
+      billing_customer_name: parsedAddress.fullName || parsedAddress.name || 'Customer',
+      billing_last_name: '',
+      billing_address: parsedAddress.addressLine1 || parsedAddress.address || '',
+      billing_city: parsedAddress.city || '',
+      billing_pincode: parsedAddress.pincode || '',
+      billing_state: parsedAddress.state || '',
+      billing_country: parsedAddress.country || 'India',
+      billing_email: userEmail || 'customer@mypinkshop.com',
+      billing_phone: parsedAddress.phone || '',
+      shipping_is_billing: true,
+      order_items: items.map(i => ({
+        name: i.product_name || i.name,
+        sku: i.product_id || i.productId || 'SKU01',
+        units: i.quantity || 1,
+        selling_price: i.price || 0
+      })),
+      payment_method: order.payment_method === 'cod' ? 'COD' : 'Prepaid',
+      sub_total: order.subtotal || order.total_amount,
+      length: 10,
+      breadth: 10,
+      height: 10,
+      weight: 0.5
+    };
+
+    const srRes = await fetch(`${SHIPROCKET_BASE_URL}/orders/create/adhoc`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const srData = await srRes.json();
+    console.log('Shiprocket Order Creation Response:', srData);
+  } catch (err) {
+    console.error('Failed to push order to Shiprocket:', err);
+  }
+}
 
 /* --------------------------------------------------------------------- */
-/* Customer                                                             */
+/* Customer                                                              */
 /* --------------------------------------------------------------------- */
 
 // ✅ POST /api/orders - Create new order (Frontend Checkout.js isko hit karta hai)
@@ -60,17 +137,31 @@ orders.post('/', authMiddleware, async (c) => {
       .run();
 
     // ✅ Order Items Insert
+    const insertedItems = [];
     for (const item of body.items) {
       const itemId = genId('oi');
+      const itemSubtotal = (item.price || 0) * (item.quantity || 1);
       await c.env.DB.prepare(
         `INSERT INTO order_items (id, order_id, product_id, product_name, price, quantity, subtotal)
          VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
-        .bind(itemId, id, item.productId || item.id, item.name || 'Product', item.price || 0, item.quantity || 1, (item.price || 0) * (item.quantity || 1))
+        .bind(itemId, id, item.productId || item.id, item.name || 'Product', item.price || 0, item.quantity || 1, itemSubtotal)
         .run();
+
+      insertedItems.push({
+        product_id: item.productId || item.id,
+        product_name: item.name || 'Product',
+        price: item.price || 0,
+        quantity: item.quantity || 1,
+        subtotal: itemSubtotal
+      });
     }
 
     const order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+
+    // 🚀 Background Push to Shiprocket
+    c.executionCtx.waitUntil(pushOrderToShiprocket(c.env, order, insertedItems, body.address, user.email));
+
     return ok(c, { order, orderId: id, orderNumber }, undefined, 201);
   } catch (err) {
     return fail(c, `Failed to create order: ${err.message}`, 500);
@@ -91,7 +182,6 @@ orders.post('/create', authMiddleware, async (c) => {
       return fail(c, 'shippingAddress is required.', 400);
     }
 
-    // Resolve product prices from the DB (never trust client-supplied prices).
     let subtotal = 0;
     const resolvedItems = [];
 
@@ -159,7 +249,6 @@ orders.post('/create', authMiddleware, async (c) => {
         .run();
     }
 
-    // Clear whatever was ordered out of the user's cart.
     for (const item of resolvedItems) {
       await c.env.DB.prepare('DELETE FROM cart WHERE user_id = ? AND product_id = ?')
         .bind(user.id, item.productId)
@@ -167,6 +256,9 @@ orders.post('/create', authMiddleware, async (c) => {
     }
 
     const order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(orderId).first();
+
+    // 🚀 Background Push to Shiprocket
+    c.executionCtx.waitUntil(pushOrderToShiprocket(c.env, order, resolvedItems, shippingAddress, user.email));
 
     return ok(c, { ...order, items: resolvedItems }, undefined, 201);
   } catch (err) {
@@ -201,7 +293,6 @@ orders.get('/my-orders', authMiddleware, async (c) => {
   }
 });
 
-
 // GET /api/orders/user - User ke apne saare orders
 orders.get('/user', authMiddleware, async (c) => {
   try {
@@ -212,9 +303,6 @@ orders.get('/user', authMiddleware, async (c) => {
 
     const userOrders = results || [];
 
-    // ✅ FIX: frontend (MyOrders.jsx) needs order.items on every order in
-    // this list (to check review-eligibility per item) — previously this
-    // route only returned the bare order rows with no items at all.
     if (userOrders.length > 0) {
       const orderIds = userOrders.map((o) => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
@@ -231,9 +319,7 @@ orders.get('/user', authMiddleware, async (c) => {
       }
     }
 
-    // ✅ FIX 2: order_date and product image ke liye
     const formattedOrders = (userOrders || []).map(order => {
-      // Properly format date
       const createdAt = order.created_at;
       const formattedDate = createdAt 
         ? new Date(createdAt.replace(' ', 'T') + 'Z').toISOString() 
@@ -241,12 +327,12 @@ orders.get('/user', authMiddleware, async (c) => {
 
       return {
         ...order,
-        created_at: formattedDate, // Frontend ko ISO format milega
+        created_at: formattedDate,
         items: (order.items || []).map(item => {
           const images = safeJsonArray(item.product_images);
           return {
             ...item,
-            image: item.image || images[0] || null // Frontend isko item.image ke roop mein use karega
+            image: item.image || images[0] || null
           };
         })
       };
@@ -258,10 +344,7 @@ orders.get('/user', authMiddleware, async (c) => {
   }
 });
 
-// PUT/PATCH /api/orders/:id/cancel - Customer cancels their own pending order
-// (Frontend Profile.jsx & MyOrders.jsx hit this path with different HTTP
-// methods (PUT vs PATCH) — registering both keeps every caller working
-// instead of chasing down each page's method choice one by one.)
+// PUT/PATCH /api/orders/:id/cancel
 const cancelOrderHandler = async (c) => {
   try {
     const user = c.get('user');
@@ -291,13 +374,9 @@ orders.put('/:id/cancel', authMiddleware, cancelOrderHandler);
 orders.patch('/:id/cancel', authMiddleware, cancelOrderHandler);
 
 /* --------------------------------------------------------------------- */
-/* Admin                                                                */
+/* Admin                                                                 */
 /* --------------------------------------------------------------------- */
 
-// GET /api/orders/all - List ALL orders for Admin Dashboard
-// ⚠️ IMPORTANT: this MUST be registered before GET /:id, otherwise ":id"
-// greedily matches the literal word "all" as an order id and this route
-// never gets hit (this was the exact cause of the reported 404).
 orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   try {
     const { results } = await c.env.DB.prepare(
@@ -309,9 +388,6 @@ orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// GET /api/orders/:id
-// ⚠️ Any new static routes (e.g. /api/orders/something) must be added
-// ABOVE this line, never below — otherwise they'll be shadowed the same way.
 orders.get('/:id', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -320,7 +396,6 @@ orders.get('/:id', authMiddleware, async (c) => {
     const order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
     if (!order) return fail(c, 'Order not found.', 404);
 
-    // Customers may only view their own orders; admins may view any order.
     if (order.user_id !== user.id && user.role !== 'admin') {
       return fail(c, 'You do not have access to this order.', 403);
     }
@@ -335,7 +410,6 @@ orders.get('/:id', authMiddleware, async (c) => {
   }
 });
 
-// GET /api/orders  - list all orders (admin)
 orders.get('/', authMiddleware, requireAdmin, async (c) => {
   try {
     const { page, limit, offset } = parsePagination(c);
@@ -371,7 +445,6 @@ orders.get('/', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// PUT /api/orders/:id/status (admin)
 orders.put('/:id/status', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
