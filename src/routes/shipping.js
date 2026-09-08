@@ -78,11 +78,10 @@ shipping.post('/check-delivery', async (c) => {
     let estimatedDaysMax = 5;
     let deliverable = true;
 
-    // Agar Shiprocket credentials configured hain, toh real API hit karo
     if (token) {
       try {
-        const weight = 0.5; // default 500g package
-        const cod = 1; // cod allowed check
+        const weight = 0.5;
+        const cod = 1;
         const url = `${SHIPROCKET_BASE_URL}/courier/serviceability/?pickup_postcode=${pickupPincode}&delivery_postcode=${pincode}&weight=${weight}&cod=${cod}`;
 
         const srRes = await fetch(url, {
@@ -97,7 +96,6 @@ shipping.post('/check-delivery', async (c) => {
         
         if (srData.status === 200 && srData.data?.available_courier_companies?.length > 0) {
           deliverable = true;
-          // Sabse acchi/sasti company select karo jo response me mile
           const bestCourier = srData.data.available_courier_companies[0];
           
           if (cartTotal < freeShippingThreshold) {
@@ -114,7 +112,6 @@ shipping.post('/check-delivery', async (c) => {
         }
       } catch (srErr) {
         console.error('Shiprocket API fallback to default:', srErr);
-        // Fallback agar Shiprocket API error de toh default true rakh lo taaki checkout block na ho
         deliverable = true;
       }
     }
@@ -168,7 +165,7 @@ shipping.post('/shipping-rates', async (c) => {
         const courier = srData.data.available_courier_companies[0];
         return ok(c, {
           courier_name: courier.courier_name || 'Standard',
-          estimated_days: parseInt(courier.estimated_delivery_days) || 3,
+          estimated_days: parseInt(courier.estimated_days || courier.estimated_delivery_days) || 3,
           rates: courier.rate || 49
         });
       }
@@ -184,15 +181,43 @@ shipping.post('/shipping-rates', async (c) => {
   }
 });
 
-// ✅ GET /api/shipping/tracking/:orderId - Get tracking details
+// ✅ GET /api/shipping/tracking/:orderId - Live Shiprocket Tracking API (Step 11)
 shipping.get('/tracking/:orderId', async (c) => {
   try {
     const orderId = c.req.param('orderId');
-    return ok(c, {
-      status: 'pending',
-      message: 'Tracking information will be available soon',
-      orderId
+    const token = await getShiprocketToken(c.env);
+
+    if (!token) {
+      return ok(c, {
+        success: false,
+        status: 'pending',
+        message: 'Tracking info unavailable (Auth missing)',
+        orderId
+      });
+    }
+
+    // Shiprocket tracking by order ID
+    const srRes = await fetch(`${SHIPROCKET_BASE_URL}/courier/track/order/${orderId}`, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` }
     });
+
+    const srData = await srRes.json();
+
+    if (srRes.ok && srData) {
+      return ok(c, {
+        success: true,
+        orderId,
+        trackingData: srData
+      });
+    } else {
+      return ok(c, {
+        success: true,
+        status: 'Processing',
+        message: 'Order is confirmed and being prepared for dispatch.',
+        orderId
+      });
+    }
   } catch (err) {
     return fail(c, `Failed to get tracking details: ${err.message}`, 500);
   }
