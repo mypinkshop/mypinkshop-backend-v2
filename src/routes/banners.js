@@ -9,7 +9,6 @@ const banners = new Hono();
 /* Public                                                                */
 /* --------------------------------------------------------------------- */
 
-// GET /api/banners/active
 banners.get('/active', async (c) => {
   try {
     const { results } = await c.env.DB.prepare(
@@ -26,14 +25,12 @@ banners.get('/active', async (c) => {
 /* Admin                                                                 */
 /* --------------------------------------------------------------------- */
 
-// GET /api/banners  (all banners, admin) - Returns direct array for frontend compatibility
 banners.get('/', authMiddleware, requireAdmin, async (c) => {
   try {
     const { results } = await c.env.DB.prepare(
       'SELECT * FROM banners ORDER BY sort_order ASC, created_at DESC'
     ).all();
-    
-    // Map snake_case columns to frontend expectations if needed
+
     const formatted = (results || []).map(b => ({
       _id: b.id,
       id: b.id,
@@ -52,23 +49,35 @@ banners.get('/', authMiddleware, requireAdmin, async (c) => {
     return fail(c, `Failed to load banners: ${err.message}`, 500);
   }
 });
-// POST /api/banners (Supports FormData & JSON for banner creation)
+
+// Helper function to handle image file to base64 conversion
+async function handleImageUpload(body) {
+  let imageUrl = body.image || '';
+  const uploadedFile = body.images || body.image;
+  
+  if (uploadedFile && typeof uploadedFile === 'object' && typeof uploadedFile.arrayBuffer === 'function') {
+    try {
+      const buffer = await uploadedFile.arrayBuffer();
+      const base64 = btoa(
+        String.fromCharCode(...new Uint8Array(buffer))
+      );
+      imageUrl = `data:${uploadedFile.type || 'image/jpeg'};base64,${base64}`;
+    } catch (e) {
+      console.error('Image conversion error:', e);
+    }
+  }
+  return imageUrl;
+}
+
+// POST /api/banners
 banners.post('/', authMiddleware, requireAdmin, async (c) => {
   try {
-    let body = {};
-    const contentType = c.req.header('content-type') || '';
-    
-    if (contentType.includes('form')) {
-      body = await c.req.parseBody();
-    } else {
-      body = await c.req.json().catch(() => ({}));
-    }
-
+    const body = await c.req.parseBody().catch(() => ({}));
     const title = body.title;
     const subtitle = body.subtitle || '';
     const buttonText = body.buttonText || 'Shop Now';
     const link = body.link || '/shop';
-    const image = body.image || '';
+    const image = await handleImageUpload(body);
     const imageKey = body.imageKey || '';
     const order = parseInt(body.order) || 0;
     const active = body.active === 'false' || body.active === false ? 0 : 1;
@@ -92,23 +101,15 @@ banners.post('/', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// POST /api/banners/create (Alias for backward compatibility)
+// POST /api/banners/create (Alias)
 banners.post('/create', authMiddleware, requireAdmin, async (c) => {
   try {
-    let body = {};
-    const contentType = c.req.header('content-type') || '';
-    
-    if (contentType.includes('form')) {
-      body = await c.req.parseBody();
-    } else {
-      body = await c.req.json().catch(() => ({}));
-    }
-
+    const body = await c.req.parseBody().catch(() => ({}));
     const title = body.title;
     const subtitle = body.subtitle || '';
     const buttonText = body.buttonText || 'Shop Now';
     const link = body.link || '/shop';
-    const image = body.image || '';
+    const image = await handleImageUpload(body);
     const imageKey = body.imageKey || '';
     const order = parseInt(body.order) || 0;
     const active = body.active === 'false' || body.active === false ? 0 : 1;
@@ -139,21 +140,15 @@ banners.put('/:id', authMiddleware, requireAdmin, async (c) => {
     const existing = await c.env.DB.prepare('SELECT * FROM banners WHERE id = ?').bind(id).first();
     if (!existing) return fail(c, 'Banner not found.', 404);
 
-    let body = {};
-    const contentType = c.req.header('content-type') || '';
-    
-    if (contentType.includes('form')) {
-      body = await c.req.parseBody();
-    } else {
-      body = await c.req.json().catch(() => ({}));
-    }
+    const body = await c.req.parseBody().catch(() => ({}));
+    const newImage = await handleImageUpload(body);
 
     const merged = {
       title: body.title ?? existing.title,
       subtitle: body.subtitle ?? existing.subtitle,
       button_text: body.buttonText ?? existing.button_text,
       link: body.link ?? existing.link,
-      image: body.image ?? existing.image,
+      image: newImage || existing.image,
       image_key: body.imageKey ?? existing.image_key,
       sort_order: body.order !== undefined ? parseInt(body.order) : existing.sort_order,
       active: body.active !== undefined ? (body.active === 'false' || body.active === false ? 0 : 1) : existing.active,
@@ -183,7 +178,6 @@ banners.put('/:id', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// DELETE /api/banners/:id
 banners.delete('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
