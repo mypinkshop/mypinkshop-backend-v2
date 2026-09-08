@@ -6,7 +6,7 @@ import { ok, fail, genId } from '../lib/utils.js';
 const banners = new Hono();
 
 /* --------------------------------------------------------------------- */
-/* Public                                                                 */
+/* Public                                                                */
 /* --------------------------------------------------------------------- */
 
 // GET /api/banners/active
@@ -23,7 +23,7 @@ banners.get('/active', async (c) => {
 });
 
 /* --------------------------------------------------------------------- */
-/* Admin                                                                  */
+/* Admin                                                                 */
 /* --------------------------------------------------------------------- */
 
 // GET /api/banners  (all banners, admin)
@@ -38,7 +38,41 @@ banners.get('/', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// POST /api/banners/create
+// POST /api/banners (Direct support for frontend calling /api/banners)
+banners.post('/', authMiddleware, requireAdmin, async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const {
+      title,
+      subtitle = '',
+      buttonText = 'Shop Now',
+      link = '/shop',
+      image = '',
+      imageKey = '',
+      order = 0,
+      active = true,
+    } = body;
+
+    if (!title) return fail(c, 'title is required.', 400);
+
+    const id = genId('ban');
+
+    await c.env.DB.prepare(
+      `INSERT INTO banners
+        (id, title, subtitle, button_text, link, image, image_key, sort_order, active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+    )
+      .bind(id, title, subtitle, buttonText, link, image, imageKey, order, active ? 1 : 0)
+      .run();
+
+    const created = await c.env.DB.prepare('SELECT * FROM banners WHERE id = ?').bind(id).first();
+    return ok(c, created, undefined, 201);
+  } catch (err) {
+    return fail(c, `Failed to create banner: ${err.message}`, 500);
+  }
+});
+
+// POST /api/banners/create (Alias for backward compatibility)
 banners.post('/create', authMiddleware, requireAdmin, async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
