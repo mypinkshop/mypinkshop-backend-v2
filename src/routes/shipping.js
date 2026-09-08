@@ -96,7 +96,16 @@ shipping.post('/check-delivery', async (c) => {
         
         if (srData.status === 200 && srData.data?.available_courier_companies?.length > 0) {
           deliverable = true;
-          const bestCourier = srData.data.available_courier_companies[0];
+          const couriers = srData.data.available_courier_companies;
+          
+          // Find the courier with real dynamic delivery days (or fallback to first)
+          let bestCourier = couriers[0];
+          for (const courier of couriers) {
+            if (courier.estimated_delivery_days && parseInt(courier.estimated_delivery_days, 10) > 0) {
+              bestCourier = courier;
+              break;
+            }
+          }
           
           if (cartTotal < freeShippingThreshold) {
             shippingCharge = bestCourier.rate || standardRate;
@@ -104,7 +113,8 @@ shipping.post('/check-delivery', async (c) => {
           
           if (bestCourier.estimated_delivery_days) {
             const parsedDays = parseInt(bestCourier.estimated_delivery_days, 10) || 3;
-            estimatedDaysMin = Math.max(1, parsedDays - 1);
+            // Dynamic calculation based on actual distance/days returned by Shiprocket
+            estimatedDaysMin = Math.max(2, parsedDays - 1);
             estimatedDaysMax = parsedDays + 2;
           }
         } else {
@@ -196,7 +206,6 @@ shipping.get('/tracking/:orderId', async (c) => {
       });
     }
 
-    // Shiprocket tracking by order ID
     const srRes = await fetch(`${SHIPROCKET_BASE_URL}/courier/track/order/${orderId}`, {
       method: 'GET',
       headers: { 'Authorization': `Bearer ${token}` }
