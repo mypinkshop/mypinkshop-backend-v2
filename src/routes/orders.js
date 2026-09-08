@@ -219,7 +219,7 @@ orders.get('/user', authMiddleware, async (c) => {
       const orderIds = userOrders.map((o) => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
       const { results: allItems } = await c.env.DB.prepare(
-        `SELECT * FROM order_items WHERE order_id IN (${placeholders})`
+        `SELECT oi.*, p.images as product_images FROM order_items oi LEFT JOIN products p ON oi.product_id = p.id WHERE oi.order_id IN (${placeholders})`
       ).bind(...orderIds).all();
 
       const itemsByOrder = {};
