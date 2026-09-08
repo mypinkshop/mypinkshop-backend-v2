@@ -77,10 +77,10 @@ auth.post('/register', async (c) => {
     const { name, email, password, phone } = body;
 
     if (!name || !email || !password) {
-      return fail(c, 'name, email and password are required.', 400);
+      return fail(c, 'Please fill in your name, email, and password to continue.', 400);
     }
     if (password.length < 6) {
-      return fail(c, 'Password must be at least 6 characters.', 400);
+      return fail(c, 'Your password must be at least 6 characters long.', 400);
     }
 
     const existing = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?')
@@ -88,7 +88,7 @@ auth.post('/register', async (c) => {
       .first();
 
     if (existing) {
-      return fail(c, 'An account with this email already exists.', 409);
+      return fail(c, 'An account with this email already exists. Please sign in instead.', 409);
     }
 
     const id = genId('usr');
@@ -128,7 +128,7 @@ auth.post('/login', async (c) => {
     const { email, password } = body;
 
     if (!email || !password) {
-      return fail(c, 'email and password are required.', 400);
+      return fail(c, 'Please enter both your email and password.', 400);
     }
 
     const user = await c.env.DB.prepare(
@@ -138,12 +138,12 @@ auth.post('/login', async (c) => {
       .first();
 
     if (!user) {
-      return fail(c, 'Invalid email or password.', 401);
+      return fail(c, "We couldn't find an account with that email. Please check and try again, or sign up for a new account.", 404);
     }
 
     const valid = await verifyPassword(password, user.password);
     if (!valid) {
-      return fail(c, 'Invalid email or password.', 401);
+      return fail(c, 'Incorrect password. Please try again or use "Forgot password?" to reset it.', 401);
     }
 
     const token = await signJWT(
@@ -210,19 +210,20 @@ auth.post('/forgot-password', async (c) => {
     const body = await c.req.json().catch(() => ({}));
     const { email } = body;
 
-    if (!email) return fail(c, 'email is required.', 400);
+    if (!email) return fail(c, 'Please enter your email address.', 400);
 
     const cleanEmail = String(email).toLowerCase().trim();
-    const genericSuccess = () =>
-      ok(c, { message: 'If that email is registered, a password reset link has been sent.' });
 
     const user = await c.env.DB.prepare('SELECT id, name FROM users WHERE email = ?')
       .bind(cleanEmail)
       .first();
 
     if (!user) {
-      // Don't reveal whether the account exists; still respond success.
-      return genericSuccess();
+      // NOTE: this reveals whether an email is registered, which is a
+      // known trade-off for a friendlier UX (most ecommerce sites do this).
+      // If you'd rather not leak account existence, switch this back to a
+      // generic success message instead.
+      return fail(c, "We couldn't find an account with that email address. Please check and try again, or sign up for a new account.", 404);
     }
 
     // Invalidate any older unused reset tokens for this user first.
@@ -259,7 +260,7 @@ auth.post('/forgot-password', async (c) => {
       return fail(c, `Email API Error: ${emailResult.error}`, 500);
     }
 
-    return genericSuccess();
+    return ok(c, { message: `A password reset link has been sent to ${cleanEmail}. Please check your inbox (and spam folder).` });
   } catch (err) {
     return fail(c, `Failed to process request: ${err.message}`, 500);
   }
