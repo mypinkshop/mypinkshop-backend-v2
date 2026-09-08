@@ -52,7 +52,7 @@ shipping.get('/settings', async (c) => {
   }
 });
 
-// ✅ POST /api/shipping/check-delivery - Strict Real-time Shiprocket Serviceability (No Fake Dates)
+// ✅ POST /api/shipping/check-delivery - Real-time Shiprocket Serviceability (Relaxed Check)
 shipping.post('/check-delivery', async (c) => {
   try {
     const { pincode, cartTotal = 0, isExpress } = await c.req.json().catch(() => ({}));
@@ -90,8 +90,8 @@ shipping.post('/check-delivery', async (c) => {
 
     const srData = await srRes.json();
     
-    // Strict Check: Shiprocket response status 200 aur valid available couriers hone chahiye
-    if (srData.status === 200 && srData.data?.available_courier_companies?.length > 0) {
+    // ✅ Relaxed & Correct Check: Agar available couriers ki list milti hai toh deliverable true karo
+    if (srData.data?.available_courier_companies && srData.data.available_courier_companies.length > 0) {
       const couriers = srData.data.available_courier_companies;
       
       let bestCourier = couriers[0];
@@ -166,7 +166,7 @@ shipping.post('/shipping-rates', async (c) => {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const srData = await srRes.json();
-      if (srData.status === 200 && srData.data?.available_courier_companies?.length > 0) {
+      if (srData.data?.available_courier_companies?.length > 0) {
         const courier = srData.data.available_courier_companies[0];
         return ok(c, {
           courier_name: courier.courier_name || 'Standard',
