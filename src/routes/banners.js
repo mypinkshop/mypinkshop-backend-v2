@@ -26,18 +26,32 @@ banners.get('/active', async (c) => {
 /* Admin                                                                 */
 /* --------------------------------------------------------------------- */
 
-// GET /api/banners  (all banners, admin)
+// GET /api/banners  (all banners, admin) - Returns direct array for frontend compatibility
 banners.get('/', authMiddleware, requireAdmin, async (c) => {
   try {
     const { results } = await c.env.DB.prepare(
       'SELECT * FROM banners ORDER BY sort_order ASC, created_at DESC'
     ).all();
-    return ok(c, results || []);
+    
+    // Map snake_case columns to frontend expectations if needed
+    const formatted = (results || []).map(b => ({
+      _id: b.id,
+      id: b.id,
+      title: b.title,
+      subtitle: b.subtitle,
+      buttonText: b.button_text,
+      link: b.link,
+      images: b.image ? [b.image] : [],
+      order: b.sort_order,
+      active: b.active === 1,
+      showTextOverlay: true
+    }));
+
+    return c.json(formatted);
   } catch (err) {
     return fail(c, `Failed to load banners: ${err.message}`, 500);
   }
 });
-
 // POST /api/banners (Supports FormData & JSON for banner creation)
 banners.post('/', authMiddleware, requireAdmin, async (c) => {
   try {
