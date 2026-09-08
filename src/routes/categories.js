@@ -3,14 +3,14 @@ import { Hono } from 'hono';
 const categories = new Hono();
 
 // Helper to generate unique ID
-const generateId = () => 'cat_' + Math.random().toString(36.substring(2, 15) + Math.random().toString(36).substring(2, 15);
+const generateId = () => 'cat_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 
 // 1. GET ALL CATEGORIES
 categories.get('/', async (c) => {
   try {
     const db = c.env.DB;
     const { results } = await db.prepare("SELECT * FROM categories ORDER BY \"order\" ASC, created_at DESC").all();
-    return c.json(results); // Frontend expects direct array based on your loadCategories logic
+    return c.json(results);
   } catch (error) {
     return c.json({ success: false, message: error.message }, 500);
   }
