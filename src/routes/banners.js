@@ -9,13 +9,27 @@ const banners = new Hono();
 /* Public                                                                */
 /* --------------------------------------------------------------------- */
 
+// GET /api/banners/active - Fixed with proper field mapping for Home page
 banners.get('/active', async (c) => {
   try {
     const { results } = await c.env.DB.prepare(
       `SELECT * FROM banners WHERE active = 1 ORDER BY sort_order ASC, created_at DESC`
     ).all();
 
-    return ok(c, results || []);
+    const formatted = (results || []).map(b => ({
+      _id: b.id,
+      id: b.id,
+      title: b.title,
+      subtitle: b.subtitle,
+      buttonText: b.button_text,
+      link: b.link,
+      images: b.image ? [b.image] : [],
+      order: b.sort_order,
+      active: b.active === 1,
+      showTextOverlay: true
+    }));
+
+    return c.json(formatted);
   } catch (err) {
     return fail(c, `Failed to load active banners: ${err.message}`, 500);
   }
