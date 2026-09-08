@@ -2,6 +2,33 @@
 import { Hono } from 'hono';
 import { ok, fail } from '../lib/utils.js';
 
+const SHIPROCKET_BASE_URL = 'https://apiv2.shiprocket.in/v1/external';
+
+// Helper: Get Shiprocket Auth Token with caching or direct fetch
+async function getShiprocketToken(env) {
+  try {
+    const email = env?.SHIPROCKET_EMAIL;
+    const password = env?.SHIPROCKET_PASSWORD;
+    
+    if (!email || !password) {
+      console.warn('Shiprocket credentials missing in environment variables.');
+      return null;
+    }
+
+    const response = await fetch(`${SHIPROCKET_BASE_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+
+    const data = await response.json();
+    return data.token || null;
+  } catch (error) {
+    console.error('Shiprocket Auth Error:', error);
+    return null;
+  }
+}
+
 const shipping = new Hono();
 
 // ✅ GET /api/shipping/settings - Shipping settings for Checkout page
@@ -22,9 +49,9 @@ shipping.get('/settings', async (c) => {
       sundayDelivery: false,
       deliverablePincodes: [],
       warehouseAddress: {
-        pincode: '110001',
-        city: 'New Delhi',
-        state: 'Delhi'
+        pincode: c.env?.PICKUP_PINCODE || '400072',
+        city: 'Mumbai',
+        state: 'Maharashtra'
       }
     });
   } catch (err) {
@@ -32,43 +59,89 @@ shipping.get('/settings', async (c) => {
   }
 });
 
-// ✅ POST /api/shipping/check-delivery - Check delivery availability
+// ✅ POST /api/shipping/check-delivery - Real-time Shiprocket Serviceability Check
 shipping.post('/check-delivery', async (c) => {
   try {
-    const { pincode, cartTotal, isExpress } = await c.req.json().catch(() => ({}));
+    const { pincode, cartTotal = 0, isExpress } = await c.req.json().catch(() => ({}));
     if (!pincode) return fail(c, 'Pincode is required.', 400);
-    
-    // Calculate shipping charges
-    let shippingCharge = 0;
-    let shippingType = 'standard';
     
     const freeShippingThreshold = 499;
     const standardRate = 49;
     const expressRate = 99;
-    
-    if (cartTotal >= freeShippingThreshold) {
-      shippingCharge = 0;
-    } else if (isExpress) {
-      shippingCharge = expressRate;
-      shippingType = 'express';
-    } else {
-      shippingCharge = standardRate;
+
+    const pickupPincode = c.env?.PICKUP_PINCODE || '400072';
+    const token = await getShiprocketToken(c.env);
+
+    let shippingCharge = cartTotal >= freeShippingThreshold ? 0 : (isExpress ? expressRate : standardRate);
+    let shippingType = isExpress ? 'express' : 'standard';
+    let estimatedDaysMin = 2;
+    let estimatedDaysMax = 5;
+    let deliverable = true;
+
+    // Agar Shiprocket credentials configured hain, toh real API hit karo
+    if (token) {
+      try {
+        const weight = 0.5; // default 500g package
+        const cod = 1; // cod allowed check
+        const url = `${SHIPROCKET_BASE_URL}/courier/serviceability/?pickup_postcode=${pickupPincode}&delivery_postcode=${pincode}&weight=${weight}&cod=${cod}`;
+
+        const srRes = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        const srData = await srRes.json();
+        
+        if (srData.status === 200 && srData.data?.available_courier_companies?.length > 0) {
+          deliverable = true;
+          // Sabse acchi/sasti company select karo jo response me mile
+          const bestCourier = srData.data.available_courier_companies[0];
+          
+          if (cartTotal < freeShippingThreshold) {
+            shippingCharge = bestCourier.rate || standardRate;
+          }
+          
+          if (bestCourier.estimated_delivery_days) {
+            const parsedDays = parseInt(bestCourier.estimated_delivery_days, 10) || 3;
+            estimatedDaysMin = Math.max(1, parsedDays - 1);
+            estimatedDaysMax = parsedDays + 2;
+          }
+        } else {
+          deliverable = false;
+        }
+      } catch (srErr) {
+        console.error('Shiprocket API fallback to default:', srErr);
+        // Fallback agar Shiprocket API error de toh default true rakh lo taaki checkout block na ho
+        deliverable = true;
+      }
     }
-    
-    // Calculate estimated delivery
+
+    if (!deliverable) {
+      return ok(c, {
+        deliverable: false,
+        error: 'Delivery not available at this pincode'
+      });
+    }
+
     const today = new Date();
-    const deliveryDate = new Date(today);
-    deliveryDate.setDate(today.getDate() + 3);
+    const minDate = new Date(today);
+    minDate.setDate(today.getDate() + estimatedDaysMin);
+    
+    const maxDate = new Date(today);
+    maxDate.setDate(today.getDate() + estimatedDaysMax);
     
     return ok(c, {
       deliverable: true,
       shippingCharge,
       shippingType,
       estimatedDelivery: {
-        minDate: today.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
-        maxDate: deliveryDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
-        minDays: 2,
-        maxDays: 4
+        minDate: minDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+        maxDate: maxDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+        minDays: estimatedDaysMin,
+        maxDays: estimatedDaysMax
       },
       freeShippingThreshold: freeShippingThreshold,
       cutOffTime: '16:00'
@@ -84,6 +157,23 @@ shipping.post('/shipping-rates', async (c) => {
     const { pickupPincode, deliveryPincode, weight = 0.5 } = await c.req.json().catch(() => ({}));
     if (!pickupPincode || !deliveryPincode) return fail(c, 'Pickup and delivery pincodes are required.', 400);
     
+    const token = await getShiprocketToken(c.env);
+    if (token) {
+      const url = `${SHIPROCKET_BASE_URL}/courier/serviceability/?pickup_postcode=${pickupPincode}&delivery_postcode=${deliveryPincode}&weight=${weight}&cod=1`;
+      const srRes = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const srData = await srRes.json();
+      if (srData.status === 200 && srData.data?.available_courier_companies?.length > 0) {
+        const courier = srData.data.available_courier_companies[0];
+        return ok(c, {
+          courier_name: courier.courier_name || 'Standard',
+          estimated_days: parseInt(courier.estimated_delivery_days) || 3,
+          rates: courier.rate || 49
+        });
+      }
+    }
+
     return ok(c, {
       courier_name: 'Standard',
       estimated_days: 3,
