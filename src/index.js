@@ -86,6 +86,18 @@ app.get('/api/health', async (c) => {
 /* --------------------------------------------------------------------- */
 /* Route mounting                                                         */
 /* --------------------------------------------------------------------- */
+//
+// ⚠️ ORDER MATTERS: any /api/users/<something> route that needs to be
+// reached by a NON-admin (addresses, cards, upi — a customer's own saved
+// data) must be mounted BEFORE the generic '/api/users' mount below. That
+// generic mount includes a GET '/:id' route guarded by requireAdmin (for
+// admins looking up any user by id) — if it's registered first, a request
+// to /api/users/addresses matches it as id="addresses" and gets rejected
+// with 403 before ever reaching the real addresses/cards/upi routes.
+
+app.route('/api/users/addresses', addressRoutes);
+app.route('/api/users/cards', userCardsRoutes);
+app.route('/api/users/upi', userUpiRoutes);
 
 app.route('/api/auth', authRoutes);
 app.route('/api/offers', offersRoutes);
@@ -104,9 +116,6 @@ app.route('/api/upload', uploadRoutes);
 app.route('/api/coupons', couponRoutes);
 app.route('/api/shipping', shippingRoutes);
 app.route('/api/otp', otpRoutes);
-app.route('/api/users/addresses', addressRoutes);
-app.route('/api/users/cards', userCardsRoutes);
-app.route('/api/users/upi', userUpiRoutes);
 app.route('/api/reviews', reviewRoutes);
 // ⬅️ NEW: mounted at BOTH paths because AdminOrders.jsx calls
 // /api/orders/returns/all for the list, but /api/returns/:id/status for
