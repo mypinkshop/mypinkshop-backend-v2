@@ -4,12 +4,49 @@ import { ok, fail } from '../lib/utils.js';
 
 const SHIPROCKET_BASE_URL = 'https://apiv2.shiprocket.in/v1/external';
 
-// Helper: Get Shiprocket Auth Token
+// Shiprocket tokens are valid for ~10 days. We cache the token in D1 (one
+// row) and only re-authenticate with email+password when the cached token
+// is missing or close to expiry — repeatedly logging in on every request
+// risks tripping Shiprocket's "too many failed attempts" account lock.
+const TOKEN_TTL_DAYS = 9; // stay a day under Shiprocket's ~10-day expiry
+
+async function getCachedToken(db) {
+  try {
+    const row = await db.prepare('SELECT token, expires_at FROM shiprocket_auth WHERE id = 1').first();
+    if (row && new Date(row.expires_at) > new Date()) {
+      return row.token;
+    }
+  } catch (err) {
+    console.error('Failed to read cached Shiprocket token:', err);
+  }
+  return null;
+}
+
+async function cacheToken(db, token) {
+  try {
+    const expiresAt = new Date(Date.now() + TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    await db.prepare(
+      `INSERT INTO shiprocket_auth (id, token, expires_at) VALUES (1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET token = excluded.token, expires_at = excluded.expires_at`
+    ).bind(token, expiresAt).run();
+  } catch (err) {
+    console.error('Failed to cache Shiprocket token:', err);
+  }
+}
+
+// Helper: Get Shiprocket Auth Token (cached in D1, refreshed only when needed)
 async function getShiprocketToken(env) {
+  const db = env?.DB;
+
+  if (db) {
+    const cached = await getCachedToken(db);
+    if (cached) return cached;
+  }
+
   try {
     const email = env?.SHIPROCKET_EMAIL;
     const password = env?.SHIPROCKET_PASSWORD;
-    
+
     if (!email || !password) {
       console.warn('Shiprocket credentials missing in environment variables.');
       return null;
@@ -22,7 +59,13 @@ async function getShiprocketToken(env) {
     });
 
     const data = await response.json();
-    return data.token || null;
+    const token = data.token || null;
+
+    if (token && db) {
+      await cacheToken(db, token);
+    }
+
+    return token;
   } catch (error) {
     console.error('Shiprocket Auth Error:', error);
     return null;
@@ -30,53 +73,6 @@ async function getShiprocketToken(env) {
 }
 
 const shipping = new Hono();
-
-// ⚠️ TEMPORARY DEBUG ROUTE — remove once Shiprocket auth is confirmed working.
-// Calls Shiprocket's login API directly and returns its raw status + body,
-// so we can see the *actual* reason auth is failing instead of a generic null.
-// Does not expose SHIPROCKET_EMAIL/PASSWORD values themselves, only whether
-// they're present and what Shiprocket's API says back.
-shipping.get('/debug-shiprocket-auth', async (c) => {
-  const email = c.env?.SHIPROCKET_EMAIL;
-  const password = c.env?.SHIPROCKET_PASSWORD;
-
-  if (!email || !password) {
-    return ok(c, {
-      configured: false,
-      message: 'SHIPROCKET_EMAIL and/or SHIPROCKET_PASSWORD are not set as Cloudflare secrets.',
-    });
-  }
-
-  try {
-    const response = await fetch(`${SHIPROCKET_BASE_URL}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-
-    const rawText = await response.text();
-    let parsed;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch {
-      parsed = null;
-    }
-
-    return ok(c, {
-      configured: true,
-      shiprocketHttpStatus: response.status,
-      shiprocketOk: response.ok,
-      hasToken: !!parsed?.token,
-      shiprocketResponseBody: parsed || rawText,
-    });
-  } catch (err) {
-    return ok(c, {
-      configured: true,
-      fetchThrew: true,
-      errorMessage: err.message,
-    });
-  }
-});
 
 // ✅ GET /api/shipping/settings
 shipping.get('/settings', async (c) => {
@@ -120,7 +116,18 @@ shipping.post('/check-delivery', async (c) => {
     const token = await getShiprocketToken(c.env);
 
     if (!token) {
-      return fail(c, 'Shipping service temporarily unavailable.', 500);
+      // ✅ FIX: fall back to standard rates instead of a hard 500, so the
+      // cart page stays usable even if Shiprocket is down/unconfigured.
+      const shippingCharge = cartTotal >= freeShippingThreshold ? 0 : (isExpress ? expressRate : standardRate);
+      return ok(c, {
+        deliverable: true,
+        shippingCharge,
+        shippingType: isExpress ? 'express' : 'standard',
+        estimatedDelivery: null,
+        freeShippingThreshold,
+        cutOffTime: '16:00',
+        fallback: true,
+      });
     }
 
     const weight = 0.5;
