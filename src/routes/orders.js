@@ -371,7 +371,7 @@ orders.patch('/:id/cancel', authMiddleware, cancelOrderHandler);
 /* Admin                                                                 */
 /* --------------------------------------------------------------------- */
 
-// ✅ FIXED: /all route to attach items properly so they don't show 0 items
+// GET /api/orders/all - Fixed with safe items attachment
 orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   try {
     const { results: ordersList } = await c.env.DB.prepare(
@@ -422,12 +422,37 @@ orders.get('/:id', authMiddleware, async (c) => {
   }
 });
 
-// ✅ PUT/PATCH Status Update Handler supporting both methods
+// ✅ PUT /api/orders/:id - Full Order Edit Route for Super Admin
+orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
+  try {
+    const id = c.req.param('id');
+    const body = await c.req.json().catch(() => ({}));
+    
+    const existing = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    if (!existing) return fail(c, 'Order not found.', 404);
+
+    const total = body.total !== undefined ? Number(body.total) : existing.total_amount;
+    const paymentMethod = body.paymentMethod || existing.payment_method;
+    const status = body.status ? body.status.toLowerCase() : existing.status;
+    const shippingAddress = body.shippingAddress ? JSON.stringify(body.shippingAddress) : existing.shipping_address;
+
+    await c.env.DB.prepare(
+      `UPDATE orders SET total_amount = ?, payment_method = ?, status = ?, shipping_address = ?, updated_at = datetime('now') WHERE id = ?`
+    ).bind(total, paymentMethod, status, shippingAddress, id).run();
+
+    const updated = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    return ok(c, updated);
+  } catch (err) {
+    return fail(c, `Failed to update order: ${err.message}`, 500);
+  }
+});
+
+// ✅ PUT/PATCH /api/orders/:id/status - Case-insensitive Status Update Handler
 const updateStatusHandler = async (c) => {
   try {
     const id = c.req.param('id');
     const body = await c.req.json().catch(() => ({}));
-    const { status } = body;
+    const status = body.status ? body.status.toLowerCase() : '';
 
     if (!VALID_STATUSES.includes(status)) {
       return fail(c, `status must be one of: ${VALID_STATUSES.join(', ')}`, 400);
@@ -435,9 +460,7 @@ const updateStatusHandler = async (c) => {
 
     const result = await c.env.DB.prepare(
       `UPDATE orders SET status = ?, updated_at = datetime('now') WHERE id = ?`
-    )
-      .bind(status, id)
-      .run();
+    ).bind(status, id).run();
 
     if (result.meta?.changes === 0) return fail(c, 'Order not found.', 404);
 
