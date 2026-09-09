@@ -31,6 +31,53 @@ async function getShiprocketToken(env) {
 
 const shipping = new Hono();
 
+// ⚠️ TEMPORARY DEBUG ROUTE — remove once Shiprocket auth is confirmed working.
+// Calls Shiprocket's login API directly and returns its raw status + body,
+// so we can see the *actual* reason auth is failing instead of a generic null.
+// Does not expose SHIPROCKET_EMAIL/PASSWORD values themselves, only whether
+// they're present and what Shiprocket's API says back.
+shipping.get('/debug-shiprocket-auth', async (c) => {
+  const email = c.env?.SHIPROCKET_EMAIL;
+  const password = c.env?.SHIPROCKET_PASSWORD;
+
+  if (!email || !password) {
+    return ok(c, {
+      configured: false,
+      message: 'SHIPROCKET_EMAIL and/or SHIPROCKET_PASSWORD are not set as Cloudflare secrets.',
+    });
+  }
+
+  try {
+    const response = await fetch(`${SHIPROCKET_BASE_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+
+    const rawText = await response.text();
+    let parsed;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      parsed = null;
+    }
+
+    return ok(c, {
+      configured: true,
+      shiprocketHttpStatus: response.status,
+      shiprocketOk: response.ok,
+      hasToken: !!parsed?.token,
+      shiprocketResponseBody: parsed || rawText,
+    });
+  } catch (err) {
+    return ok(c, {
+      configured: true,
+      fetchThrew: true,
+      errorMessage: err.message,
+    });
+  }
+});
+
 // ✅ GET /api/shipping/settings
 shipping.get('/settings', async (c) => {
   try {
