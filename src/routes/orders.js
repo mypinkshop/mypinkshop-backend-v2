@@ -5,6 +5,7 @@ import { ok, fail, genId, genOrderNumber, parsePagination, safeJsonArray } from 
 
 const orders = new Hono();
 
+// ✅ Added 'processing' to valid statuses list
 const VALID_STATUSES = ['pending', 'processing', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'];
 const SHIPROCKET_BASE_URL = 'https://apiv2.shiprocket.in/v1/external';
 
