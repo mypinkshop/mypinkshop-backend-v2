@@ -88,13 +88,12 @@ async function pushOrderToShiprocket(env, order, items, address, userEmail) {
 /* Customer                                                              */
 /* --------------------------------------------------------------------- */
 
-// ✅ POST /api/orders - Create new order (Frontend Checkout.js isko hit karta hai)
+// ✅ POST /api/orders - Create new order
 orders.post('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
     const body = await c.req.json().catch(() => ({}));
     
-    // Validation
     if (!body.items || !Array.isArray(body.items) || body.items.length === 0) {
       return fail(c, 'items must be a non-empty array.', 400);
     }
@@ -105,7 +104,6 @@ orders.post('/', authMiddleware, async (c) => {
     const id = genId('order');
     const orderNumber = genOrderNumber();
     
-    // Calculate totals
     let subtotal = 0;
     for (const item of body.items) {
       subtotal += (item.price || 0) * (item.quantity || 1);
@@ -115,7 +113,6 @@ orders.post('/', authMiddleware, async (c) => {
     const shippingAmount = subtotal >= 499 ? 0 : 49;
     const totalAmount = subtotal + taxAmount + shippingAmount;
 
-    // ✅ Order Insert
     await c.env.DB.prepare(
       `INSERT INTO orders 
         (id, user_id, order_number, status, subtotal, tax_amount, shipping_amount, discount_amount,
@@ -136,7 +133,6 @@ orders.post('/', authMiddleware, async (c) => {
       )
       .run();
 
-    // ✅ Order Items Insert
     const insertedItems = [];
     for (const item of body.items) {
       const itemId = genId('oi');
@@ -159,7 +155,6 @@ orders.post('/', authMiddleware, async (c) => {
 
     const order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
 
-    // 🚀 Background Push to Shiprocket
     c.executionCtx.waitUntil(pushOrderToShiprocket(c.env, order, insertedItems, body.address, user.email));
 
     return ok(c, { order, orderId: id, orderNumber }, undefined, 201);
@@ -257,7 +252,6 @@ orders.post('/create', authMiddleware, async (c) => {
 
     const order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(orderId).first();
 
-    // 🚀 Background Push to Shiprocket
     c.executionCtx.waitUntil(pushOrderToShiprocket(c.env, order, resolvedItems, shippingAddress, user.email));
 
     return ok(c, { ...order, items: resolvedItems }, undefined, 201);
@@ -293,7 +287,7 @@ orders.get('/my-orders', authMiddleware, async (c) => {
   }
 });
 
-// GET /api/orders/user - User ke apne saare orders
+// GET /api/orders/user
 orders.get('/user', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -377,12 +371,30 @@ orders.patch('/:id/cancel', authMiddleware, cancelOrderHandler);
 /* Admin                                                                 */
 /* --------------------------------------------------------------------- */
 
+// ✅ FIXED: /all route to attach items properly so they don't show 0 items
 orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   try {
-    const { results } = await c.env.DB.prepare(
+    const { results: ordersList } = await c.env.DB.prepare(
       'SELECT * FROM orders ORDER BY created_at DESC'
     ).all();
-    return ok(c, results || []);
+
+    if (ordersList && ordersList.length > 0) {
+      const orderIds = ordersList.map(o => o.id);
+      const placeholders = orderIds.map(() => '?').join(',');
+      const { results: allItems } = await c.env.DB.prepare(
+        `SELECT * FROM order_items WHERE order_id IN (${placeholders})`
+      ).bind(...orderIds).all();
+
+      const itemsMap = {};
+      for (const item of allItems || []) {
+        (itemsMap[item.order_id] ||= []).push(item);
+      }
+      for (const order of ordersList) {
+        order.items = itemsMap[order.id] || [];
+      }
+    }
+
+    return ok(c, ordersList || []);
   } catch (err) {
     return fail(c, `Failed to load all orders: ${err.message}`, 500);
   }
@@ -410,42 +422,8 @@ orders.get('/:id', authMiddleware, async (c) => {
   }
 });
 
-orders.get('/', authMiddleware, requireAdmin, async (c) => {
-  try {
-    const { page, limit, offset } = parsePagination(c);
-    const url = new URL(c.req.url);
-    const status = url.searchParams.get('status');
-
-    const conditions = [];
-    const bindings = [];
-    if (status) {
-      conditions.push('status = ?');
-      bindings.push(status);
-    }
-    const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-
-    const { results } = await c.env.DB.prepare(
-      `SELECT * FROM orders ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`
-    )
-      .bind(...bindings, limit, offset)
-      .all();
-
-    const countRow = await c.env.DB.prepare(`SELECT COUNT(*) as total FROM orders ${whereClause}`)
-      .bind(...bindings)
-      .first();
-
-    return ok(c, results || [], {
-      page,
-      limit,
-      total: countRow?.total || 0,
-      totalPages: Math.max(1, Math.ceil((countRow?.total || 0) / limit)),
-    });
-  } catch (err) {
-    return fail(c, `Failed to load orders: ${err.message}`, 500);
-  }
-});
-
-orders.put('/:id/status', authMiddleware, requireAdmin, async (c) => {
+// ✅ PUT/PATCH Status Update Handler supporting both methods
+const updateStatusHandler = async (c) => {
   try {
     const id = c.req.param('id');
     const body = await c.req.json().catch(() => ({}));
@@ -468,6 +446,9 @@ orders.put('/:id/status', authMiddleware, requireAdmin, async (c) => {
   } catch (err) {
     return fail(c, `Failed to update order status: ${err.message}`, 500);
   }
-});
+};
+
+orders.put('/:id/status', authMiddleware, requireAdmin, updateStatusHandler);
+orders.patch('/:id/status', authMiddleware, requireAdmin, updateStatusHandler);
 
 export default orders;
