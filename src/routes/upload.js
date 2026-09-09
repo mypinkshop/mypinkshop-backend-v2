@@ -28,8 +28,16 @@ upload.post('/', authMiddleware, async (c) => {
       return ok(c, { url });
     }
 
-    // ✅ Agar R2 binding nahi hai, toh D1 mein base64 store karo (temporary solution)
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+    // ✅ Safe Base64 Conversion (Chunked to prevent Maximum call stack size exceeded error)
+    const uint8Array = new Uint8Array(arrayBuffer);
+    let binary = '';
+    const chunkSize = 32768; // 32KB chunks to prevent stack overflow
+    for (let i = 0; i < uint8Array.length; i += chunkSize) {
+      const chunk = uint8Array.subarray(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, chunk);
+    }
+    const base64 = btoa(binary);
+
     return ok(c, { url: `data:${file.type};base64,${base64}` });
   } catch (err) {
     return fail(c, `Failed to upload image: ${err.message}`, 500);
