@@ -5,7 +5,7 @@ import { ok, fail, genId, genOrderNumber, parsePagination, safeJsonArray } from 
 
 const orders = new Hono();
 
-const VALID_STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'];
+const VALID_STATUSES = ['pending', 'processing', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'];
 const SHIPROCKET_BASE_URL = 'https://apiv2.shiprocket.in/v1/external';
 
 // Helper: Get Shiprocket Token
