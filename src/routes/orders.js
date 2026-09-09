@@ -5,7 +5,6 @@ import { ok, fail, genId, genOrderNumber, parsePagination, safeJsonArray } from 
 
 const orders = new Hono();
 
-// ✅ Added 'processing' to valid statuses list
 const VALID_STATUSES = ['pending', 'processing', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'];
 const SHIPROCKET_BASE_URL = 'https://apiv2.shiprocket.in/v1/external';
 
@@ -89,7 +88,7 @@ async function pushOrderToShiprocket(env, order, items, address, userEmail) {
 /* Customer                                                              */
 /* --------------------------------------------------------------------- */
 
-// ✅ POST /api/orders - Create new order
+// ✅ POST /api/orders - Create new order and save product brand into order_items
 orders.post('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -138,19 +137,31 @@ orders.post('/', authMiddleware, async (c) => {
     for (const item of body.items) {
       const itemId = genId('oi');
       const itemSubtotal = (item.price || 0) * (item.quantity || 1);
+      const productId = item.productId || item.id;
+
+      // Fetch brand from products table automatically
+      let itemBrand = 'Richfem';
+      try {
+        const prod = await c.env.DB.prepare('SELECT brand FROM products WHERE id = ?').bind(productId).first();
+        if (prod && prod.brand) {
+          itemBrand = prod.brand;
+        }
+      } catch (e) {}
+
       await c.env.DB.prepare(
-        `INSERT INTO order_items (id, order_id, product_id, product_name, price, quantity, subtotal)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO order_items (id, order_id, product_id, product_name, price, quantity, subtotal, brand)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-        .bind(itemId, id, item.productId || item.id, item.name || 'Product', item.price || 0, item.quantity || 1, itemSubtotal)
+        .bind(itemId, id, productId, item.name || 'Product', item.price || 0, item.quantity || 1, itemSubtotal, itemBrand)
         .run();
 
       insertedItems.push({
-        product_id: item.productId || item.id,
+        product_id: productId,
         product_name: item.name || 'Product',
         price: item.price || 0,
         quantity: item.quantity || 1,
-        subtotal: itemSubtotal
+        subtotal: itemSubtotal,
+        brand: itemBrand
       });
     }
 
@@ -183,7 +194,7 @@ orders.post('/create', authMiddleware, async (c) => {
 
     for (const item of items) {
       const product = await c.env.DB.prepare(
-        'SELECT id, name, price, stock FROM products WHERE id = ?'
+        'SELECT id, name, price, stock, brand FROM products WHERE id = ?'
       )
         .bind(item.productId)
         .first();
@@ -202,6 +213,7 @@ orders.post('/create', authMiddleware, async (c) => {
         price: product.price,
         quantity: item.quantity,
         subtotal: lineSubtotal,
+        brand: product.brand || 'Richfem',
       });
     }
 
@@ -234,10 +246,10 @@ orders.post('/create', authMiddleware, async (c) => {
     for (const item of resolvedItems) {
       const itemId = genId('oi');
       await c.env.DB.prepare(
-        `INSERT INTO order_items (id, order_id, product_id, product_name, price, quantity, subtotal)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO order_items (id, order_id, product_id, product_name, price, quantity, subtotal, brand)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-        .bind(itemId, orderId, item.productId, item.productName, item.price, item.quantity, item.subtotal)
+        .bind(itemId, orderId, item.productId, item.productName, item.price, item.quantity, item.subtotal, item.brand)
         .run();
 
       await c.env.DB.prepare('UPDATE products SET stock = stock - ? WHERE id = ?')
@@ -302,12 +314,15 @@ orders.get('/user', authMiddleware, async (c) => {
       const orderIds = userOrders.map((o) => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
       const { results: allItems } = await c.env.DB.prepare(
-        `SELECT oi.*, p.images as product_images FROM order_items oi LEFT JOIN products p ON oi.product_id = p.id WHERE oi.order_id IN (${placeholders})`
+        `SELECT oi.*, p.images as product_images, p.brand as product_brand FROM order_items oi LEFT JOIN products p ON oi.product_id = p.id WHERE oi.order_id IN (${placeholders})`
       ).bind(...orderIds).all();
 
       const itemsByOrder = {};
       for (const item of allItems || []) {
-        (itemsByOrder[item.order_id] ||= []).push(item);
+        (itemsByOrder[item.order_id] ||= []).push({
+          ...item,
+          brand: item.brand || item.product_brand || 'Richfem'
+        });
       }
       for (const order of userOrders) {
         order.items = itemsByOrder[order.id] || [];
@@ -351,8 +366,8 @@ const cancelOrderHandler = async (c) => {
     if (order.user_id !== user.id && user.role !== 'admin') {
       return fail(c, 'You do not have access to this order.', 403);
     }
-    if (order.status !== 'pending' && order.status !== 'confirmed') {
-      return fail(c, 'Only pending or confirmed orders can be cancelled.', 400);
+    if (order.status !== 'pending' && order.status !== 'confirmed' && order.status !== 'processing') {
+      return fail(c, 'Only pending, processing or confirmed orders can be cancelled.', 400);
     }
 
     await c.env.DB.prepare(
@@ -372,7 +387,7 @@ orders.patch('/:id/cancel', authMiddleware, cancelOrderHandler);
 /* Admin                                                                 */
 /* --------------------------------------------------------------------- */
 
-// GET /api/orders/all - Fixed with safe items attachment
+// GET /api/orders/all - Safely joins with products table and ensures brand presence
 orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   try {
     const { results: ordersList } = await c.env.DB.prepare(
@@ -382,13 +397,17 @@ orders.get('/all', authMiddleware, requireAdmin, async (c) => {
     if (ordersList && ordersList.length > 0) {
       const orderIds = ordersList.map(o => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
+      
       const { results: allItems } = await c.env.DB.prepare(
-        `SELECT * FROM order_items WHERE order_id IN (${placeholders})`
+        `SELECT oi.*, p.brand as product_brand FROM order_items oi LEFT JOIN products p ON oi.product_id = p.id WHERE oi.order_id IN (${placeholders})`
       ).bind(...orderIds).all();
 
       const itemsMap = {};
       for (const item of allItems || []) {
-        (itemsMap[item.order_id] ||= []).push(item);
+        (itemsMap[item.order_id] ||= []).push({
+          ...item,
+          brand: item.brand || item.product_brand || 'Richfem'
+        });
       }
       for (const order of ordersList) {
         order.items = itemsMap[order.id] || [];
@@ -413,17 +432,22 @@ orders.get('/:id', authMiddleware, async (c) => {
       return fail(c, 'You do not have access to this order.', 403);
     }
 
-    const { results: items } = await c.env.DB.prepare('SELECT * FROM order_items WHERE order_id = ?')
+    const { results: items } = await c.env.DB.prepare('SELECT oi.*, p.brand as product_brand FROM order_items oi LEFT JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?')
       .bind(id)
       .all();
 
-    return ok(c, { ...order, items: items || [] });
+    const formattedItems = (items || []).map(i => ({
+      ...i,
+      brand: i.brand || i.product_brand || 'Richfem'
+    }));
+
+    return ok(c, { ...order, items: formattedItems });
   } catch (err) {
     return fail(c, `Failed to load order: ${err.message}`, 500);
   }
 });
 
-// ✅ PUT /api/orders/:id - Full Order Edit Route for Super Admin
+// PUT /api/orders/:id - Full Order Edit Route for Super Admin
 orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
@@ -448,7 +472,7 @@ orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// ✅ PUT/PATCH /api/orders/:id/status - Case-insensitive Status Update Handler
+// PUT/PATCH /api/orders/:id/status - Status Update Handler
 const updateStatusHandler = async (c) => {
   try {
     const id = c.req.param('id');
