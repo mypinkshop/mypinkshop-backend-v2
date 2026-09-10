@@ -18,25 +18,102 @@ function cleanProductName(raw) {
     .trim();
 }
 
-// Flipkart serves images from several CDN subdomains and formats — the old
-// regex only matched `rukminim...jpg`, missing rukminim2/3, .jpeg, .png,
-// and .webp variants.
-function extractImageFromHtml(html) {
+// Flipkart serves images from several CDN subdomains and formats — collects
+// ALL product gallery images (not just one), deduped, filtering out obvious
+// non-product assets (site logos/icons/sprites).
+function extractImagesFromHtml(html, max = 8) {
   const matches = html.match(
     /https:\/\/(?:rukminim\d*\.flixcart\.com|[a-z0-9.-]*flixcart\.com)[^"'\s\\]+?\.(?:jpg|jpeg|png|webp)/gi
-  );
-  return matches && matches.length > 0 ? matches[0] : '';
+  ) || [];
+
+  const seen = new Set();
+  const images = [];
+  for (const url of matches) {
+    const lower = url.toLowerCase();
+    if (lower.includes('logo') || lower.includes('sprite') || lower.includes('icon')) continue;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    images.push(url);
+    if (images.length >= max) break;
+  }
+  return images;
 }
 
-function extractJsonLdImage(jsonLd) {
-  if (!jsonLd?.image) return '';
-  return Array.isArray(jsonLd.image) ? jsonLd.image[0] || '' : jsonLd.image;
+// jsonLd.image may be a single string or an array of strings.
+function extractJsonLdImages(jsonLd) {
+  if (!jsonLd?.image) return [];
+  return Array.isArray(jsonLd.image) ? jsonLd.image.filter(Boolean) : [jsonLd.image];
+}
+
+// jsonLd.brand may be a string, or an object like { "@type": "Brand", "name": "..." }.
+function extractJsonLdBrand(jsonLd) {
+  if (!jsonLd?.brand) return '';
+  if (typeof jsonLd.brand === 'string') return jsonLd.brand;
+  return jsonLd.brand.name || '';
+}
+
+// Best-effort weight/volume extraction (e.g. "90 ml", "250 g", "1 kg") from
+// the product name, since Flipkart doesn't expose this in a consistent
+// structured field we can reliably scrape.
+function extractWeight(name) {
+  const match = String(name || '').match(/(\d+(?:\.\d+)?)\s?(ml|l|litre|liter|kg|gm|gms|g)\b/i);
+  if (!match) return '';
+  return `${match[1]} ${match[2].toLowerCase()}`;
 }
 
 // ✅ GET /api/import/flipkart (Test route)
 importer.get('/flipkart', async (c) => {
   return ok(c, { message: 'Flipkart importer route is working!' });
 });
+
+function parseFlipkartHtml(html) {
+  let productData = { images: [], brand: '' };
+
+  const jsonLdMatches = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/g);
+  if (jsonLdMatches) {
+    for (const match of jsonLdMatches) {
+      try {
+        const jsonLd = JSON.parse(match.replace(/<script type="application\/ld\+json">|<\/script>/g, ''));
+        if (jsonLd.name && jsonLd.offers) {
+          productData = {
+            name: cleanProductName(jsonLd.name),
+            price: jsonLd.offers?.price || 0,
+            images: extractJsonLdImages(jsonLd),
+            brand: extractJsonLdBrand(jsonLd),
+            description: jsonLd.description || ''
+          };
+          break;
+        }
+      } catch (e) {
+        // JSON parse fail, try next script block
+      }
+    }
+  }
+
+  if (!productData.name) {
+    const titleMatch = html.match(/<title>(.*?)<\/title>/);
+    if (titleMatch) {
+      productData.name = cleanProductName(titleMatch[1]);
+    }
+  }
+
+  if (!productData.price) {
+    const priceMatch1 = html.match(/₹\s*([\d,]+(?:\.\d+)?)/);
+    if (priceMatch1) {
+      productData.price = parseFloat(priceMatch1[1].replace(/,/g, ''));
+    }
+  }
+
+  if (!productData.images || productData.images.length === 0) {
+    productData.images = extractImagesFromHtml(html);
+  }
+
+  if (!productData.weight) {
+    productData.weight = extractWeight(productData.name);
+  }
+
+  return { productData, jsonLdMatches };
+}
 
 // ✅ POST /api/import/flipkart (Actual Import)
 importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
@@ -52,7 +129,7 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    const response = await fetch(url, {
+    let response = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept-Language': 'en-IN,en;q=0.9',
@@ -66,13 +143,12 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
 
     // ✅ Agar response 529 hai (server busy), toh timeout ke baad retry karo
     if (response.status === 529 || response.status === 503) {
-      // 2 second wait
       await new Promise(resolve => setTimeout(resolve, 2000));
-      
+
       const retryController = new AbortController();
       const retryTimeoutId = setTimeout(() => retryController.abort(), timeoutMs);
-      
-      const retryResponse = await fetch(url, {
+
+      response = await fetch(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         },
@@ -81,124 +157,14 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
       });
 
       clearTimeout(retryTimeoutId);
+    }
 
-      if (!retryResponse.ok) {
-        return fail(c, `Failed to fetch Flipkart page. Status: ${retryResponse.status}`, 400);
-      }
-
-      const html = await retryResponse.text();
-
-      // ✅ Scraping logic
-      let productData = {};
-      const jsonLdMatches = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/g);
-      if (jsonLdMatches) {
-        for (const match of jsonLdMatches) {
-          try {
-            const jsonLd = JSON.parse(match.replace(/<script type="application\/ld\+json">|<\/script>/g, ''));
-            if (jsonLd.name && jsonLd.offers) {
-              productData = {
-                name: cleanProductName(jsonLd.name),
-                price: jsonLd.offers?.price || 0,
-                image: extractJsonLdImage(jsonLd),
-                description: jsonLd.description || ''
-              };
-              break;
-            }
-          } catch (e) {
-            // JSON parse fail
-          }
-        }
-      }
-
-      if (!productData.name) {
-        const titleMatch = html.match(/<title>(.*?)<\/title>/);
-        if (titleMatch) {
-          productData.name = cleanProductName(titleMatch[1]);
-        }
-      }
-
-      if (!productData.price) {
-        const priceMatch1 = html.match(/₹\s*([\d,]+(?:\.\d+)?)/);
-        if (priceMatch1) {
-          productData.price = parseFloat(priceMatch1[1].replace(/,/g, ''));
-        }
-      }
-
-      if (!productData.image) {
-        productData.image = extractImageFromHtml(html);
-      }
-
-      if (!productData.name || !productData.price) {
-        // ⚠️ TEMPORARY DEBUG INFO — remove once we've diagnosed why
-        // extraction is failing (likely Flipkart blocking/serving a
-        // different page to Cloudflare Workers' outbound IPs).
-        return fail(c, 'Unable to extract product data. Please check the URL or try a different product.', 400, {
-          debugHttpStatus: retryResponse.status,
-          debugHtmlLength: html.length,
-          debugHasJsonLd: !!jsonLdMatches,
-          debugHtmlSnippet: html.slice(0, 1500),
-        });
-      }
-
-      // ✅ FIX: flat top-level shape (not wrapped via ok()) — the frontend
-      // (AdminAddProduct.jsx's FlipkartImporter) reads data.scraped.name
-      // directly off the response, not data.data.scraped.name.
-      return c.json({
-        success: true,
-        scraped: {
-          name: productData.name,
-          price: productData.price,
-          originalPrice: productData.price * 1.2,
-          brand: '',
-          description: productData.description ? [productData.description] : [],
-          keyFeatures: [],
-          images: productData.image ? [productData.image] : [],
-          weight: '',
-          ingredients: ''
-        }
-      });
+    if (!response.ok) {
+      return fail(c, `Failed to fetch Flipkart page. Status: ${response.status}`, 400);
     }
 
     const html = await response.text();
-
-    let productData = {};
-    const jsonLdMatches = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/g);
-    if (jsonLdMatches) {
-      for (const match of jsonLdMatches) {
-        try {
-          const jsonLd = JSON.parse(match.replace(/<script type="application\/ld\+json">|<\/script>/g, ''));
-          if (jsonLd.name && jsonLd.offers) {
-            productData = {
-              name: cleanProductName(jsonLd.name),
-              price: jsonLd.offers?.price || 0,
-              image: extractJsonLdImage(jsonLd),
-              description: jsonLd.description || ''
-            };
-            break;
-          }
-        } catch (e) {
-          // JSON parse fail
-        }
-      }
-    }
-
-    if (!productData.name) {
-      const titleMatch = html.match(/<title>(.*?)<\/title>/);
-      if (titleMatch) {
-        productData.name = cleanProductName(titleMatch[1]);
-      }
-    }
-
-    if (!productData.price) {
-      const priceMatch1 = html.match(/₹\s*([\d,]+(?:\.\d+)?)/);
-      if (priceMatch1) {
-        productData.price = parseFloat(priceMatch1[1].replace(/,/g, ''));
-      }
-    }
-
-    if (!productData.image) {
-      productData.image = extractImageFromHtml(html);
-    }
+    const { productData, jsonLdMatches } = parseFlipkartHtml(html);
 
     if (!productData.name || !productData.price) {
       // ⚠️ TEMPORARY DEBUG INFO — remove once we've diagnosed why
@@ -212,18 +178,20 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
       });
     }
 
-    // ✅ FIX: same flat shape as above.
+    // ✅ FIX: flat top-level shape (not wrapped via ok()) — the frontend
+    // (AdminAddProduct.jsx's FlipkartImporter) reads data.scraped.name
+    // directly off the response, not data.data.scraped.name.
     return c.json({
       success: true,
       scraped: {
         name: productData.name,
         price: productData.price,
         originalPrice: productData.price * 1.2,
-        brand: '',
+        brand: productData.brand || '',
         description: productData.description ? [productData.description] : [],
         keyFeatures: [],
-        images: productData.image ? [productData.image] : [],
-        weight: '',
+        images: productData.images || [],
+        weight: productData.weight || '',
         ingredients: ''
       }
     });
