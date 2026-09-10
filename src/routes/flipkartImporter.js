@@ -107,7 +107,11 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
         return fail(c, 'Unable to extract product data. Please check the URL or try a different product.', 400);
       }
 
-      return ok(c, {
+      // ✅ FIX: flat top-level shape (not wrapped via ok()) — the frontend
+      // (AdminAddProduct.jsx's FlipkartImporter) reads data.scraped.name
+      // directly off the response, not data.data.scraped.name.
+      return c.json({
+        success: true,
         scraped: {
           name: productData.name,
           price: productData.price,
@@ -170,7 +174,9 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
       return fail(c, 'Unable to extract product data. Please check the URL or try a different product.', 400);
     }
 
-    return ok(c, {
+    // ✅ FIX: same flat shape as above.
+    return c.json({
+      success: true,
       scraped: {
         name: productData.name,
         price: productData.price,
