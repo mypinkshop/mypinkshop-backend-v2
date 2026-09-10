@@ -104,7 +104,15 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
       }
 
       if (!productData.name || !productData.price) {
-        return fail(c, 'Unable to extract product data. Please check the URL or try a different product.', 400);
+        // ⚠️ TEMPORARY DEBUG INFO — remove once we've diagnosed why
+        // extraction is failing (likely Flipkart blocking/serving a
+        // different page to Cloudflare Workers' outbound IPs).
+        return fail(c, 'Unable to extract product data. Please check the URL or try a different product.', 400, {
+          debugHttpStatus: retryResponse.status,
+          debugHtmlLength: html.length,
+          debugHasJsonLd: !!jsonLdMatches,
+          debugHtmlSnippet: html.slice(0, 1500),
+        });
       }
 
       // ✅ FIX: flat top-level shape (not wrapped via ok()) — the frontend
@@ -171,7 +179,15 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
     }
 
     if (!productData.name || !productData.price) {
-      return fail(c, 'Unable to extract product data. Please check the URL or try a different product.', 400);
+      // ⚠️ TEMPORARY DEBUG INFO — remove once we've diagnosed why
+      // extraction is failing (likely Flipkart blocking/serving a
+      // different page to Cloudflare Workers' outbound IPs).
+      return fail(c, 'Unable to extract product data. Please check the URL or try a different product.', 400, {
+        debugHttpStatus: response.status,
+        debugHtmlLength: html.length,
+        debugHasJsonLd: !!jsonLdMatches,
+        debugHtmlSnippet: html.slice(0, 1500),
+      });
     }
 
     // ✅ FIX: same flat shape as above.
