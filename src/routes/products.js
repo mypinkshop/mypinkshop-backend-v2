@@ -147,6 +147,7 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
     const {
+      id: frontendId, // 🔥 FIX: Extract frontend generated ID
       name,
       brand = 'Richfem',
       mainCategory = 'Other',
@@ -173,7 +174,8 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       return fail(c, 'name and price are required.', 400);
     }
 
-    const id = genId('prod');
+    // 🔥 FIX: Agar frontend ne ID bheji hai to wahi use karo, warna nayi banao
+    const id = frontendId || genId('prod');
 
     await c.env.DB.prepare(
       `INSERT INTO products
@@ -276,7 +278,7 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
     const updated = await c.env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(id).first();
     return ok(c, serializeProduct(updated));
   } catch (err) {
-    return fail(c, `Failed to load product: ${err.message}`, 500);
+    return fail(c, `Failed to update product: ${err.message}`, 500);
   }
 });
 
