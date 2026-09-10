@@ -14,6 +14,8 @@ function serializeProduct(row) {
     _id: row.id,
     images: images,
     aboutThisItem: safeJsonArray(row.about_this_item),
+    keyFeatures: safeJsonArray(row.key_features),
+    variations: safeJsonArray(row.variations),
     isActive: !!row.is_active,
     isFeatured: !!row.is_featured,
     status: row.is_active ? 'active' : 'inactive',
@@ -22,7 +24,6 @@ function serializeProduct(row) {
     mainCategory: row.main_category,
     subcategory: row.sub_category,
     subCategory: row.sub_category,
-    // 🔥 Google Shopping & AI Search Engine Optimization (JSON-LD & OpenGraph Rich Snippet Meta)
     seoMeta: {
       "@context": "https://schema.org/",
       "@type": "Product",
@@ -50,10 +51,6 @@ function serializeProduct(row) {
     }
   };
 }
-
-/* --------------------------------------------------------------------- */
-/* Public Routes                                                         */
-/* --------------------------------------------------------------------- */
 
 products.get('/', async (c) => {
   try {
@@ -139,31 +136,43 @@ products.get('/:id', async (c) => {
   }
 });
 
-/* --------------------------------------------------------------------- */
-/* Admin Routes                                                          */
-/* --------------------------------------------------------------------- */
-
 products.post('/create', authMiddleware, requireAdmin, async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
     const {
-      id: frontendId, // 🔥 FIX: Extract frontend generated ID
+      id: frontendId,
       name,
       brand = 'Richfem',
       mainCategory = 'Other',
       subCategory = '',
-      categorySlug = '',
-      description = '',
-      aboutThisItem = [],
+      description = [],
+      keyFeatures = [],
       price,
       originalPrice = 0,
       discountPercent = 0,
-      tax = 5,
+      tax = 18,
       stock = 10,
       sku = null,
       weight = '',
       dimensions = '',
       images = [],
+      skinType = 'all',
+      concerns = [],
+      ingredients = '',
+      finish = '',
+      coverage = '',
+      shade = '',
+      hairType = 'all',
+      hairConcerns = [],
+      fabric = '',
+      material = '',
+      gender = 'unisex',
+      variations = [],
+      hasVariations = false,
+      metaTitle = '',
+      metaDescription = '',
+      metaKeywords = '',
+      slug = '',
       isActive = true,
       isFeatured = false,
       vendorId = 'admin',
@@ -174,36 +183,70 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       return fail(c, 'name and price are required.', 400);
     }
 
-    // 🔥 FIX: Agar frontend ne ID bheji hai to wahi use karo, warna nayi banao
     const id = frontendId || genId('prod');
+
+    const toSafeString = (val) => {
+      if (val === null || val === undefined) return '';
+      if (Array.isArray(val)) return val.join(', ');
+      if (typeof val === 'object') return JSON.stringify(val);
+      return String(val);
+    };
+
+    const toSafeJsonString = (val) => {
+      if (!val) return JSON.stringify([]);
+      if (typeof val === 'string') {
+        try { JSON.parse(val); return val; } catch { return JSON.stringify([val]); }
+      }
+      return JSON.stringify(val);
+    };
 
     await c.env.DB.prepare(
       `INSERT INTO products
         (id, vendor_id, vendor_name, name, brand, main_category, sub_category, category_slug,
-         description, about_this_item, price, original_price, discount_percent, tax, stock, sku,
-         weight, dimensions, images, rating, review_count, is_active, is_featured, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, datetime('now'), datetime('now'))`
+         description, about_this_item, key_features, price, original_price, discount_percent, tax, stock, sku,
+         weight, dimensions, images, skin_type, concerns, ingredients, finish, coverage, shade,
+         hair_type, hair_concerns, fabric, material, gender, variations, has_variations,
+         meta_title, meta_description, meta_keywords, slug, rating, review_count, is_active, is_featured, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 4.8, 0, ?, ?, datetime('now'), datetime('now'))`
     )
       .bind(
         id,
         vendorId,
         vendorName,
-        name,
-        brand,
-        mainCategory,
-        subCategory,
-        categorySlug,
-        description,
-        JSON.stringify(aboutThisItem || []),
-        price,
-        originalPrice,
-        discountPercent,
-        tax,
-        stock,
-        sku,
-        weight,
-        dimensions,
-        JSON.stringify(images || []),
+        toSafeString(name),
+        toSafeString(brand),
+        toSafeString(mainCategory),
+        toSafeString(subCategory),
+        toSafeString(slug),
+        toSafeString(Array.isArray(description) ? description.join('\n') : description),
+        toSafeJsonString(description),
+        toSafeJsonString(keyFeatures),
+        parseFloat(price) || 0,
+        parseFloat(originalPrice) || 0,
+        parseFloat(discountPercent) || 0,
+        parseFloat(tax) || 18,
+        parseInt(stock, 10) || 10,
+        toSafeString(sku),
+        toSafeString(weight),
+        toSafeString(dimensions),
+        toSafeJsonString(images),
+        toSafeString(skinType),
+        toSafeString(concerns),
+        toSafeString(ingredients),
+        toSafeString(finish),
+        toSafeString(coverage),
+        toSafeString(shade),
+        toSafeString(hairType),
+        toSafeString(hairConcerns),
+        toSafeString(fabric),
+        toSafeString(material),
+        toSafeString(gender),
+        toSafeJsonString(variations),
+        hasVariations ? 1 : 0,
+        toSafeString(metaTitle),
+        toSafeString(metaDescription),
+        toSafeString(metaKeywords),
+        toSafeString(slug),
         isActive ? 1 : 0,
         isFeatured ? 1 : 0
       )
@@ -213,72 +256,6 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
     return ok(c, serializeProduct(created), undefined, 201);
   } catch (err) {
     return fail(c, `Failed to create product: ${err.message}`, 500);
-  }
-});
-
-products.put('/:id', authMiddleware, requireAdmin, async (c) => {
-  try {
-    const id = c.req.param('id');
-    const existing = await c.env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(id).first();
-    if (!existing) return fail(c, 'Product not found.', 404);
-
-    const body = await c.req.json().catch(() => ({}));
-    const merged = {
-      name: body.name ?? existing.name,
-      brand: body.brand ?? existing.brand,
-      main_category: body.mainCategory ?? existing.main_category,
-      sub_category: body.subCategory ?? existing.sub_category,
-      category_slug: body.categorySlug ?? existing.category_slug,
-      description: body.description ?? existing.description,
-      about_this_item:
-        body.aboutThisItem !== undefined ? JSON.stringify(body.aboutThisItem) : existing.about_this_item,
-      price: body.price ?? existing.price,
-      original_price: body.originalPrice ?? existing.original_price,
-      discount_percent: body.discountPercent ?? existing.discount_percent,
-      tax: body.tax ?? existing.tax,
-      stock: body.stock ?? existing.stock,
-      sku: body.sku ?? existing.sku,
-      weight: body.weight ?? existing.weight,
-      dimensions: body.dimensions ?? existing.dimensions,
-      images: body.images !== undefined ? JSON.stringify(body.images) : existing.images,
-      is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : existing.is_active,
-      is_featured: body.isFeatured !== undefined ? (body.isFeatured ? 1 : 0) : existing.is_featured,
-    };
-
-    await c.env.DB.prepare(
-      `UPDATE products SET name = ?, brand = ?, main_category = ?, sub_category = ?, category_slug = ?,
-        description = ?, about_this_item = ?, price = ?, original_price = ?, discount_percent = ?,
-        tax = ?, stock = ?, sku = ?, weight = ?, dimensions = ?, images = ?, is_active = ?,
-        is_featured = ?, updated_at = datetime('now')
-       WHERE id = ?`
-    )
-      .bind(
-        merged.name,
-        merged.brand,
-        merged.main_category,
-        merged.sub_category,
-        merged.category_slug,
-        merged.description,
-        merged.about_this_item,
-        merged.price,
-        merged.original_price,
-        merged.discount_percent,
-        merged.tax,
-        merged.stock,
-        merged.sku,
-        merged.weight,
-        merged.dimensions,
-        merged.images,
-        merged.is_active,
-        merged.is_featured,
-        id
-      )
-      .run();
-
-    const updated = await c.env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(id).first();
-    return ok(c, serializeProduct(updated));
-  } catch (err) {
-    return fail(c, `Failed to update product: ${err.message}`, 500);
   }
 });
 
