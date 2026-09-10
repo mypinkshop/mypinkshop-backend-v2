@@ -5,6 +5,34 @@ import { ok, fail } from '../lib/utils.js';
 
 const importer = new Hono();
 
+// Flipkart's <title> tag (used as a fallback when JSON-LD product data
+// isn't found) typically looks like:
+//   "Buy Ajmal Kuro EDP Eau De Parfum - 90 ml Online In India | Flipkart.com"
+// This strips the marketing prefix/suffix so only the product name remains.
+function cleanProductName(raw) {
+  return String(raw || '')
+    .replace(/\s*\|\s*Flipkart\.com\s*$/i, '')
+    .replace(/^\s*Buy\s+/i, '')
+    .replace(/\s*-?\s*Online\s+(in\s+India)?\s*$/i, '')
+    .replace(/\s*at\s+Best\s+Price(s)?\s+in\s+India.*$/i, '')
+    .trim();
+}
+
+// Flipkart serves images from several CDN subdomains and formats — the old
+// regex only matched `rukminim...jpg`, missing rukminim2/3, .jpeg, .png,
+// and .webp variants.
+function extractImageFromHtml(html) {
+  const matches = html.match(
+    /https:\/\/(?:rukminim\d*\.flixcart\.com|[a-z0-9.-]*flixcart\.com)[^"'\s\\]+?\.(?:jpg|jpeg|png|webp)/gi
+  );
+  return matches && matches.length > 0 ? matches[0] : '';
+}
+
+function extractJsonLdImage(jsonLd) {
+  if (!jsonLd?.image) return '';
+  return Array.isArray(jsonLd.image) ? jsonLd.image[0] || '' : jsonLd.image;
+}
+
 // ✅ GET /api/import/flipkart (Test route)
 importer.get('/flipkart', async (c) => {
   return ok(c, { message: 'Flipkart importer route is working!' });
@@ -69,9 +97,9 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
             const jsonLd = JSON.parse(match.replace(/<script type="application\/ld\+json">|<\/script>/g, ''));
             if (jsonLd.name && jsonLd.offers) {
               productData = {
-                name: jsonLd.name,
+                name: cleanProductName(jsonLd.name),
                 price: jsonLd.offers?.price || 0,
-                image: jsonLd.image || '',
+                image: extractJsonLdImage(jsonLd),
                 description: jsonLd.description || ''
               };
               break;
@@ -85,7 +113,7 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
       if (!productData.name) {
         const titleMatch = html.match(/<title>(.*?)<\/title>/);
         if (titleMatch) {
-          productData.name = titleMatch[1].replace(/\s*\| Flipkart\.com$/, '').trim();
+          productData.name = cleanProductName(titleMatch[1]);
         }
       }
 
@@ -97,10 +125,7 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
       }
 
       if (!productData.image) {
-        const imageMatches = html.match(/https:\/\/rukminim[^"']+\.jpg/g);
-        if (imageMatches && imageMatches.length > 0) {
-          productData.image = imageMatches[0];
-        }
+        productData.image = extractImageFromHtml(html);
       }
 
       if (!productData.name || !productData.price) {
@@ -144,9 +169,9 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
           const jsonLd = JSON.parse(match.replace(/<script type="application\/ld\+json">|<\/script>/g, ''));
           if (jsonLd.name && jsonLd.offers) {
             productData = {
-              name: jsonLd.name,
+              name: cleanProductName(jsonLd.name),
               price: jsonLd.offers?.price || 0,
-              image: jsonLd.image || '',
+              image: extractJsonLdImage(jsonLd),
               description: jsonLd.description || ''
             };
             break;
@@ -160,7 +185,7 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
     if (!productData.name) {
       const titleMatch = html.match(/<title>(.*?)<\/title>/);
       if (titleMatch) {
-        productData.name = titleMatch[1].replace(/\s*\| Flipkart\.com$/, '').trim();
+        productData.name = cleanProductName(titleMatch[1]);
       }
     }
 
@@ -172,10 +197,7 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
     }
 
     if (!productData.image) {
-      const imageMatches = html.match(/https:\/\/rukminim[^"']+\.jpg/g);
-      if (imageMatches && imageMatches.length > 0) {
-        productData.image = imageMatches[0];
-      }
+      productData.image = extractImageFromHtml(html);
     }
 
     if (!productData.name || !productData.price) {
