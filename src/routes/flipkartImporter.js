@@ -30,7 +30,17 @@ function extractImagesFromHtml(html, max = 8) {
   const images = [];
   for (const url of matches) {
     const lower = url.toLowerCase();
-    if (lower.includes('logo') || lower.includes('sprite') || lower.includes('icon')) continue;
+    if (
+      lower.includes('logo') ||
+      lower.includes('sprite') ||
+      lower.includes('icon') ||
+      lower.includes('banner') ||
+      lower.includes('promo') ||
+      lower.includes('offer') ||
+      lower.includes('fk-p-flap') ||
+      lower.includes('rating') ||
+      lower.includes('star')
+    ) continue;
     if (seen.has(url)) continue;
     seen.add(url);
     images.push(url);
@@ -68,6 +78,7 @@ importer.get('/flipkart', async (c) => {
 
 function parseFlipkartHtml(html) {
   let productData = { images: [], brand: '' };
+  let rawJsonLd = null;
 
   const jsonLdMatches = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/g);
   if (jsonLdMatches) {
@@ -75,6 +86,7 @@ function parseFlipkartHtml(html) {
       try {
         const jsonLd = JSON.parse(match.replace(/<script type="application\/ld\+json">|<\/script>/g, ''));
         if (jsonLd.name && jsonLd.offers) {
+          rawJsonLd = jsonLd;
           productData = {
             name: cleanProductName(jsonLd.name),
             price: jsonLd.offers?.price || 0,
@@ -104,7 +116,12 @@ function parseFlipkartHtml(html) {
     }
   }
 
-  if (!productData.images || productData.images.length === 0) {
+  const rawImageCandidates = html.match(
+    /https:\/\/(?:rukminim\d*\.flixcart\.com|[a-z0-9.-]*flixcart\.com)[^"'\s\\]+?\.(?:jpg|jpeg|png|webp)/gi
+  ) || [];
+
+  const usedJsonLdImages = productData.images && productData.images.length > 0;
+  if (!usedJsonLdImages) {
     productData.images = extractImagesFromHtml(html);
   }
 
@@ -112,7 +129,18 @@ function parseFlipkartHtml(html) {
     productData.weight = extractWeight(productData.name);
   }
 
-  return { productData, jsonLdMatches };
+  return {
+    productData,
+    jsonLdMatches,
+    debug: {
+      jsonLdFound: !!jsonLdMatches,
+      jsonLdUsable: !!rawJsonLd,
+      jsonLdBrandRaw: rawJsonLd?.brand ?? null,
+      usedJsonLdImages,
+      rawImageCandidateCount: rawImageCandidates.length,
+      rawImageCandidatesSample: rawImageCandidates.slice(0, 10),
+    },
+  };
 }
 
 // ✅ POST /api/import/flipkart (Actual Import)
@@ -124,8 +152,10 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
       return fail(c, 'Please provide a valid Flipkart product URL.', 400);
     }
 
-    // ✅ Flipkart bot detection ko bypass karne ke liye "Short Timeout" use karo
-    const timeoutMs = 5000;
+    // ✅ Flipkart bot detection ko bypass karne ke liye timeout use karo.
+    // Flipkart pages are heavy — 5s was too aggressive and caused
+    // legitimate slow-but-successful fetches to abort.
+    const timeoutMs = 15000;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -164,7 +194,7 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
     }
 
     const html = await response.text();
-    const { productData, jsonLdMatches } = parseFlipkartHtml(html);
+    const { productData, jsonLdMatches, debug } = parseFlipkartHtml(html);
 
     if (!productData.name || !productData.price) {
       // ⚠️ TEMPORARY DEBUG INFO — remove once we've diagnosed why
@@ -193,7 +223,9 @@ importer.post('/flipkart', authMiddleware, requireAdmin, async (c) => {
         images: productData.images || [],
         weight: productData.weight || '',
         ingredients: ''
-      }
+      },
+      // ⚠️ TEMPORARY — remove once brand/image extraction is confirmed correct.
+      _debug: debug,
     });
   } catch (err) {
     return fail(c, `Failed to import from Flipkart: ${err.message}`, 500);
