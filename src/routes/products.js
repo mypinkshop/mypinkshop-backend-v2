@@ -7,31 +7,54 @@ const products = new Hono();
 
 function serializeProduct(row) {
   if (!row) return null;
+  const images = safeJsonArray(row.images);
   return {
     ...row,
-    id: row.id,          // ✅ ID ko explicit set karo
+    id: row.id,
     _id: row.id,
-    images: safeJsonArray(row.images),
+    images: images,
     aboutThisItem: safeJsonArray(row.about_this_item),
     isActive: !!row.is_active,
     isFeatured: !!row.is_featured,
-    // ✅ Frontend compatibility ke liye ye fields add karo
     status: row.is_active ? 'active' : 'inactive',
     is_active: row.is_active,
     category: row.main_category,
     mainCategory: row.main_category,
     subcategory: row.sub_category,
     subCategory: row.sub_category,
+    // 🔥 Google Shopping & AI Search Engine Optimization (JSON-LD & OpenGraph Rich Snippet Meta)
+    seoMeta: {
+      "@context": "https://schema.org/",
+      "@type": "Product",
+      "name": row.name,
+      "image": images,
+      "description": row.description || `Buy ${row.name} online at best price in India on MyPinkShop. Free Shipping & COD available.`,
+      "brand": {
+        "@type": "Brand",
+        "name": row.brand || "MyPinkShop"
+      },
+      "sku": row.sku || row.id,
+      "offers": {
+        "@type": "Offer",
+        "url": `https://www.mypinkshop.com/product/${row.id}`,
+        "priceCurrency": "INR",
+        "price": row.price,
+        "priceValidUntil": "2027-12-31",
+        "itemCondition": "https://schema.org/NewCondition",
+        "availability": row.stock > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
+        "seller": {
+          "@type": "Organization",
+          "name": "MyPinkShop"
+        }
+      }
+    }
   };
 }
 
 /* --------------------------------------------------------------------- */
-/* Public                                                                 */
+/* Public Routes                                                         */
 /* --------------------------------------------------------------------- */
 
-// GET /api/products
-// Supports optional query params: category, subCategory, search, minPrice,
-// maxPrice, featured, sort (price_asc|price_low - alias, price_desc, newest, rating), page, limit
 products.get('/', async (c) => {
   try {
     const url = new URL(c.req.url);
@@ -105,7 +128,6 @@ products.get('/', async (c) => {
   }
 });
 
-// GET /api/products/:id
 products.get('/:id', async (c) => {
   try {
     const id = c.req.param('id');
@@ -118,16 +140,15 @@ products.get('/:id', async (c) => {
 });
 
 /* --------------------------------------------------------------------- */
-/* Admin                                                                  */
+/* Admin Routes                                                          */
 /* --------------------------------------------------------------------- */
 
-// POST /api/products/create
 products.post('/create', authMiddleware, requireAdmin, async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
     const {
       name,
-      brand = '',
+      brand = 'Richfem',
       mainCategory = 'Other',
       subCategory = '',
       categorySlug = '',
@@ -137,7 +158,7 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       originalPrice = 0,
       discountPercent = 0,
       tax = 5,
-      stock = 0,
+      stock = 10,
       sku = null,
       weight = '',
       dimensions = '',
@@ -193,7 +214,6 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// PUT /api/products/:id
 products.put('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
@@ -256,11 +276,10 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
     const updated = await c.env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(id).first();
     return ok(c, serializeProduct(updated));
   } catch (err) {
-    return fail(c, `Failed to update product: ${err.message}`, 500);
+    return fail(c, `Failed to load product: ${err.message}`, 500);
   }
 });
 
-// DELETE /api/products/:id
 products.delete('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
