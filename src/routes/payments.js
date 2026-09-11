@@ -55,6 +55,7 @@ async function getAccessToken(env) {
 
 // ============================================================
 // ✅ POST /api/payments/initiate
+// ✅ Frontend `MPS-...` (order_number) bhejta hai → usse dhundho
 // ============================================================
 payments.post('/initiate', authMiddleware, async (c) => {
   try {
@@ -64,8 +65,9 @@ payments.post('/initiate', authMiddleware, async (c) => {
 
     if (!orderId) return fail(c, 'orderId is required.', 400);
 
+    // ✅ `MPS-...` (order_number) se order dhundho
     const order = await c.env.DB.prepare(
-      'SELECT * FROM orders WHERE id = ?'
+      'SELECT * FROM orders WHERE order_number = ?'
     )
       .bind(orderId)
       .first();
@@ -86,7 +88,7 @@ payments.post('/initiate', authMiddleware, async (c) => {
       amount: Math.round(order.total_amount * 100),
       expireAfter: 1200,
       metaInfo: {
-        udf1: order.id,
+        udf1: order.order_number, // ✅ MPS-...
         udf2: user.id,
       },
       paymentFlow: {
@@ -115,11 +117,12 @@ payments.post('/initiate', authMiddleware, async (c) => {
     }
 
     const paymentId = genId('pay');
+    // ✅ `order_id` mein bhi `MPS-...` (order_number) save karo
     await c.env.DB.prepare(
       `INSERT INTO payments (id, order_id, provider, provider_payment_id, amount, currency, status, created_at)
        VALUES (?, ?, 'phonepe', ?, ?, 'INR', 'created', datetime('now'))`
     )
-      .bind(paymentId, orderId, merchantOrderId, order.total_amount)
+      .bind(paymentId, order.order_number, merchantOrderId, order.total_amount)
       .run();
 
     return ok(
@@ -129,6 +132,7 @@ payments.post('/initiate', authMiddleware, async (c) => {
         merchantTransactionId: merchantOrderId,
         redirectUrl: data.redirectUrl,
         amount: order.total_amount,
+        orderNumber: order.order_number, // ✅ Frontend ko MPS-... bhi bhejo
       },
       undefined,
       201
@@ -149,7 +153,6 @@ payments.post('/verify', optionalAuth, async (c) => {
     if (!merchantTransactionId)
       return fail(c, 'merchantTransactionId is required.', 400);
 
-    // ✅ optionalAuth ne token verify karke user set kiya (agar valid tha)
     const requestUser = c.get('user') || null;
 
     const accessToken = await getAccessToken(c.env);
@@ -188,22 +191,23 @@ payments.post('/verify', optionalAuth, async (c) => {
       let belongsToUser = false;
 
       if (payment) {
-        await c.env.DB.prepare(
-          `UPDATE orders SET payment_status = 'paid', status = 'confirmed', updated_at = datetime('now') WHERE id = ?`
-        )
-          .bind(payment.order_id)
-          .run();
-
+        // ✅ `payment.order_id` mein `MPS-...` hai — usse order dhundho
         const order = await c.env.DB.prepare(
-          'SELECT order_number, total_amount, user_id FROM orders WHERE id = ?'
+          'SELECT order_number, total_amount, user_id FROM orders WHERE order_number = ?'
         )
           .bind(payment.order_id)
           .first();
 
         if (order) {
-          orderIdFinal = payment.order_id;
+          // ✅ Order status update karo
+          await c.env.DB.prepare(
+            `UPDATE orders SET payment_status = 'paid', status = 'confirmed', updated_at = datetime('now') WHERE order_number = ?`
+          )
+            .bind(order.order_number)
+            .run();
 
-          // ✅ Owner check — JWT payload mein `id` field hai
+          orderIdFinal = order.order_number;
+
           belongsToUser = !!(
             requestUser && order.user_id === requestUser.id
           );
@@ -218,11 +222,9 @@ payments.post('/verify', optionalAuth, async (c) => {
       return ok(c, {
         verified: true,
         status: 'success',
-        // ✅ Sirf owner ko details
         orderNumber: belongsToUser ? orderNumber : null,
         orderTotal: belongsToUser ? orderTotal : null,
         orderId: belongsToUser ? orderIdFinal : null,
-        // ✅ Sab ko basic confirmation
         confirmed: true,
       });
     }
@@ -294,8 +296,9 @@ payments.post('/webhook', async (c) => {
         .first();
 
       if (payment) {
+        // ✅ `payment.order_id` mein `MPS-...` hai
         await c.env.DB.prepare(
-          `UPDATE orders SET payment_status = 'paid', status = 'confirmed', updated_at = datetime('now') WHERE id = ?`
+          `UPDATE orders SET payment_status = 'paid', status = 'confirmed', updated_at = datetime('now') WHERE order_number = ?`
         )
           .bind(payment.order_id)
           .run();
@@ -310,6 +313,7 @@ payments.post('/webhook', async (c) => {
 
 // ============================================================
 // ✅ GET /api/payments/:orderId (admin)
+// ✅ `order_number` (MPS-...) se payments dhundho
 // ============================================================
 payments.get('/:orderId', authMiddleware, requireAdmin, async (c) => {
   try {
