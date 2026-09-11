@@ -4,10 +4,10 @@
 // Docs: https://developer.phonepe.com/v1/docs/standard-checkout/
 //
 // Required Secrets (wrangler secret put <NAME>):
-//   PHONEPE_MERCHANT_ID  - Merchant ID from PhonePe Dashboard
-//   PHONEPE_SALT_KEY      - Salt Key from PhonePe Dashboard
-//   PHONEPE_SALT_INDEX   - Usually 1
-//   PHONEPE_ENV          - "sandbox" or "production"
+//   PHONEPE_CLIENT_ID      - Client ID from PhonePe Dashboard
+//   PHONEPE_CLIENT_SECRET  - Client Secret from PhonePe Dashboard
+//   PHONEPE_CLIENT_VERSION - Client Version (usually 1)
+//   PHONEPE_ENV            - "sandbox" or "production"
 import { Hono } from 'hono';
 import { authMiddleware, requireAdmin } from './auth.js';
 import { ok, fail, genId } from '../lib/utils.js';
@@ -23,11 +23,11 @@ async function sha256Hex(str) {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// ✅ Generate PhonePe X-VERIFY Checksum
-async function generateChecksum(payloadBase64, endpoint, saltKey, saltIndex) {
-  const stringToHash = payloadBase64 + endpoint + saltKey;
+// ✅ Generate PhonePe X-VERIFY Checksum (Client Secret based)
+async function generateChecksum(payloadBase64, endpoint, clientSecret, clientVersion) {
+  const stringToHash = payloadBase64 + endpoint + clientSecret;
   const hash = await sha256Hex(stringToHash);
-  return `${hash}###${saltIndex}`;
+  return `${hash}###${clientVersion}`;
 }
 
 // ✅ POST /api/payments/initiate - Create PhonePe payment session
@@ -43,7 +43,8 @@ payments.post('/initiate', authMiddleware, async (c) => {
     if (!order) return fail(c, 'Order not found.', 404);
     if (order.user_id !== user.id) return fail(c, 'You do not have access to this order.', 403);
 
-    const { PHONEPE_MERCHANT_ID, PHONEPE_SALT_KEY, PHONEPE_SALT_INDEX, PHONEPE_ENV } = c.env;
+    // ✅ Naye credentials use karo
+    const { PHONEPE_CLIENT_ID, PHONEPE_CLIENT_SECRET, PHONEPE_CLIENT_VERSION, PHONEPE_ENV } = c.env;
     
     // PhonePe API URL (Sandbox vs Production)
     const baseUrl = PHONEPE_ENV === 'production' 
@@ -53,7 +54,7 @@ payments.post('/initiate', authMiddleware, async (c) => {
     // ✅ Prepare Payload
     const merchantTransactionId = `TXN_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     const payload = {
-      merchantId: PHONEPE_MERCHANT_ID,
+      merchantId: PHONEPE_CLIENT_ID, // ✅ Client ID use karo
       merchantTransactionId: merchantTransactionId,
       merchantUserId: user.id,
       amount: Math.round(order.total_amount * 100), // Convert to paise
@@ -68,7 +69,8 @@ payments.post('/initiate', authMiddleware, async (c) => {
 
     const payloadBase64 = btoa(JSON.stringify(payload));
     const endpoint = '/pg/v1/pay';
-    const checksum = await generateChecksum(payloadBase64, endpoint, PHONEPE_SALT_KEY, PHONEPE_SALT_INDEX);
+    // ✅ Naya checksum function use karo
+    const checksum = await generateChecksum(payloadBase64, endpoint, PHONEPE_CLIENT_SECRET, PHONEPE_CLIENT_VERSION);
 
     // ✅ Call PhonePe API
     const phonePeResponse = await fetch(`${baseUrl}${endpoint}`, {
@@ -118,21 +120,23 @@ payments.post('/verify', authMiddleware, async (c) => {
 
     if (!merchantTransactionId) return fail(c, 'merchantTransactionId is required.', 400);
 
-    const { PHONEPE_MERCHANT_ID, PHONEPE_SALT_KEY, PHONEPE_SALT_INDEX, PHONEPE_ENV } = c.env;
+    // ✅ Naye credentials use karo
+    const { PHONEPE_CLIENT_ID, PHONEPE_CLIENT_SECRET, PHONEPE_CLIENT_VERSION, PHONEPE_ENV } = c.env;
     
     const baseUrl = PHONEPE_ENV === 'production' 
       ? 'https://api.phonepe.com/apis/hermes' 
       : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
 
-    const endpoint = `/pg/v1/status/${PHONEPE_MERCHANT_ID}/${merchantTransactionId}`;
-    const checksum = await generateChecksum('', endpoint, PHONEPE_SALT_KEY, PHONEPE_SALT_INDEX);
+    const endpoint = `/pg/v1/status/${PHONEPE_CLIENT_ID}/${merchantTransactionId}`;
+    // ✅ Naya checksum function use karo
+    const checksum = await generateChecksum('', endpoint, PHONEPE_CLIENT_SECRET, PHONEPE_CLIENT_VERSION);
 
     const phonePeResponse = await fetch(`${baseUrl}${endpoint}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
         'X-VERIFY': checksum,
-        'X-MERCHANT-ID': PHONEPE_MERCHANT_ID,
+        'X-MERCHANT-ID': PHONEPE_CLIENT_ID,
         'accept': 'application/json'
       }
     });
