@@ -139,9 +139,12 @@ payments.post('/initiate', authMiddleware, async (c) => {
 });
 
 // ============================================================
-// ✅ POST /api/payments/verify
+// ✅ POST /api/payments/verify — PUBLIC (no auth)
+// Reason: PhonePe redirect kar sakta hai kisi bhi device pe
+// User mobile se QR scan kare → mobile pe token nahi hoga
+// Frontend token check karega — guest mode mein verify call nahi karega
 // ============================================================
-payments.post('/verify', authMiddleware, async (c) => {
+payments.post('/verify', async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
     const { merchantTransactionId } = body;
@@ -262,7 +265,10 @@ payments.post('/webhook', async (c) => {
       event.payload?.merchantOrderId ||
       event.payload?.merchantTransactionId;
 
-    if (orderIdFromEvent && (event.type === 'PAYMENT_SUCCESS' || event.state === 'COMPLETED')) {
+    if (
+      orderIdFromEvent &&
+      (event.type === 'PAYMENT_SUCCESS' || event.state === 'COMPLETED')
+    ) {
       await c.env.DB.prepare(
         `UPDATE payments SET status = 'success' WHERE provider_payment_id = ?`
       )
