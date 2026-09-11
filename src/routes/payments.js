@@ -1,6 +1,6 @@
 // src/routes/payments.js
 //
-// PhonePe Payment Gateway — OAuth Token based flow (Client ID/Secret)
+// PhonePe Payment Gateway — Standard Checkout v2 (OAuth Token flow)
 // Docs: https://developer.phonepe.com/v1/docs/standard-checkout/
 //
 // Required Secrets (Cloudflare Dashboard → Settings → Variables):
@@ -15,16 +15,29 @@ import { ok, fail, genId } from '../lib/utils.js';
 const payments = new Hono();
 
 // ============================================================
+// ✅ Environment URLs (PhonePe Docs ke hisaab se)
+// ============================================================
+function getBaseUrls(env) {
+  const isProd = env.PHONEPE_ENV === 'production';
+  return {
+    // OAuth token ke liye
+    authUrl: isProd
+      ? 'https://api.phonepe.com/apis/identity-manager'
+      : 'https://api-preprod.phonepe.com/apis/pg-sandbox',
+    // Pay / Status / Refund ke liye
+    apiUrl: isProd
+      ? 'https://api.phonepe.com/apis/pg'
+      : 'https://api-preprod.phonepe.com/apis/pg-sandbox',
+  };
+}
+
+// ============================================================
 // ✅ PhonePe OAuth Access Token
 // ============================================================
 async function getAccessToken(env) {
-  const isProd = env.PHONEPE_ENV === 'production';
+  const { authUrl } = getBaseUrls(env);
 
-  const tokenUrl = isProd
-    ? 'https://api.phonepe.com/apis/identity-manager/v1/oauth/token'
-    : 'https://api-preprod.phonepe.com/apis/pg-sandbox/v1/oauth/token';
-
-  const response = await fetch(tokenUrl, {
+  const response = await fetch(`${authUrl}/v1/oauth/token`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -45,11 +58,11 @@ async function getAccessToken(env) {
     );
   }
 
-  return data.access_token; // "O-Bearer" type token
+  return data.access_token;
 }
 
 // ============================================================
-// ✅ POST /api/payments/initiate
+// ✅ POST /api/payments/initiate — Payment create karo
 // ============================================================
 payments.post('/initiate', authMiddleware, async (c) => {
   try {
@@ -69,50 +82,47 @@ payments.post('/initiate', authMiddleware, async (c) => {
     if (order.user_id !== user.id)
       return fail(c, 'You do not have access to this order.', 403);
 
-    // ✅ Step 1: OAuth access token lo
+    // ✅ Step 1: OAuth token lo
     const accessToken = await getAccessToken(c.env);
+    const { apiUrl } = getBaseUrls(c.env);
 
-    const isProd = c.env.PHONEPE_ENV === 'production';
-    const baseUrl = isProd
-      ? 'https://api.phonepe.com/apis/pg'
-      : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
-
-    const merchantTransactionId = `TXN_${Date.now()}_${Math.floor(
+    // ✅ merchantOrderId unique rakho
+    const merchantOrderId = `TXN_${Date.now()}_${Math.floor(
       Math.random() * 1000
     )}`;
 
-    // ✅ Step 2: Payload banao (OAuth flow — merchantId field nahi hota)
+    // ✅ Step 2: Payload banao (Standard Checkout v2 format)
     const payload = {
-      merchantOrderId: merchantTransactionId,
+      merchantOrderId: merchantOrderId,
       amount: Math.round(order.total_amount * 100), // paise
-      redirectUrl: `${c.env.FRONTEND_URL}/payment-callback?txnId=${merchantTransactionId}`,
-      redirectMode: 'REDIRECT',
-      callbackUrl: `${c.env.FRONTEND_URL}/api/payments/webhook`,
-      mobileNumber: '',
-      paymentInstrument: {
-        type: 'PAY_PAGE',
+      expireAfter: 1200, // 20 minutes
+      metaInfo: {
+        udf1: order.id,
+        udf2: user.id,
+      },
+      paymentFlow: {
+        type: 'PG_CHECKOUT',
+        message: 'Payment for your order',
+        merchantUrls: {
+          redirectUrl: `${c.env.FRONTEND_URL}/payment-callback?txnId=${merchantOrderId}`,
+        },
       },
     };
 
-    // ✅ Base64 encode (Cloudflare Workers mein btoa available hai)
-    const payloadBase64 = btoa(JSON.stringify(payload));
-
-    // ✅ Step 3: PhonePe Pay API call — Authorization header mein token
-    const phonePeResponse = await fetch(`${baseUrl}/v1/pay`, {
+    // ✅ Step 3: PhonePe Create Payment API call (v2 endpoint)
+    const phonePeResponse = await fetch(`${apiUrl}/checkout/v2/pay`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `O-Bearer ${accessToken}`,
         accept: 'application/json',
       },
-      body: JSON.stringify({
-        request: payloadBase64,
-      }),
+      body: JSON.stringify(payload),
     });
 
     const data = await phonePeResponse.json().catch(() => ({}));
 
-    if (!phonePeResponse.ok || !data.success) {
+    if (!phonePeResponse.ok || !data.redirectUrl) {
       return fail(c, `PhonePe Error: ${JSON.stringify(data)}`, 500);
     }
 
@@ -122,7 +132,7 @@ payments.post('/initiate', authMiddleware, async (c) => {
       `INSERT INTO payments (id, order_id, provider, provider_payment_id, amount, currency, status, created_at)
        VALUES (?, ?, 'phonepe', ?, ?, 'INR', 'created', datetime('now'))`
     )
-      .bind(paymentId, orderId, merchantTransactionId, order.total_amount)
+      .bind(paymentId, orderId, merchantOrderId, order.total_amount)
       .run();
 
     // ✅ Redirect URL frontend ko bhejo
@@ -130,8 +140,8 @@ payments.post('/initiate', authMiddleware, async (c) => {
       c,
       {
         paymentId,
-        merchantTransactionId,
-        redirectUrl: data.data?.instrumentResponse?.redirectInfo?.url,
+        merchantTransactionId: merchantOrderId,
+        redirectUrl: data.redirectUrl,
         amount: order.total_amount,
       },
       undefined,
@@ -143,7 +153,7 @@ payments.post('/initiate', authMiddleware, async (c) => {
 });
 
 // ============================================================
-// ✅ POST /api/payments/verify
+// ✅ POST /api/payments/verify — Payment status check
 // ============================================================
 payments.post('/verify', authMiddleware, async (c) => {
   try {
@@ -155,15 +165,12 @@ payments.post('/verify', authMiddleware, async (c) => {
 
     // ✅ OAuth token lo
     const accessToken = await getAccessToken(c.env);
+    const { apiUrl } = getBaseUrls(c.env);
 
-    const isProd = c.env.PHONEPE_ENV === 'production';
-    const baseUrl = isProd
-      ? 'https://api.phonepe.com/apis/pg'
-      : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
+    // ✅ Order Status API (v2 endpoint)
+    const endpoint = `/checkout/v2/order/${merchantTransactionId}/status`;
 
-    const endpoint = `/v1/status/${c.env.PHONEPE_CLIENT_ID}/${merchantTransactionId}`;
-
-    const phonePeResponse = await fetch(`${baseUrl}${endpoint}`, {
+    const phonePeResponse = await fetch(`${apiUrl}${endpoint}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -174,7 +181,8 @@ payments.post('/verify', authMiddleware, async (c) => {
 
     const data = await phonePeResponse.json().catch(() => ({}));
 
-    if (data.success && data.code === 'PAYMENT_SUCCESS') {
+    // ✅ PhonePe v2 state: COMPLETED, FAILED, PENDING
+    if (data.state === 'COMPLETED') {
       await c.env.DB.prepare(
         `UPDATE payments SET status = 'success' WHERE provider_payment_id = ?`
       )
@@ -196,7 +204,7 @@ payments.post('/verify', authMiddleware, async (c) => {
       }
 
       return ok(c, { verified: true, status: 'success' });
-    } else {
+    } else if (data.state === 'FAILED') {
       await c.env.DB.prepare(
         `UPDATE payments SET status = 'failed' WHERE provider_payment_id = ?`
       )
@@ -206,7 +214,13 @@ payments.post('/verify', authMiddleware, async (c) => {
       return ok(c, {
         verified: false,
         status: 'failed',
-        phonepeCode: data.code,
+        phonepeState: data.state,
+      });
+    } else {
+      return ok(c, {
+        verified: false,
+        status: 'pending',
+        phonepeState: data.state || 'PENDING',
       });
     }
   } catch (err) {
@@ -227,7 +241,6 @@ payments.post('/webhook', async (c) => {
       return fail(c, 'Invalid webhook payload.', 400);
     }
 
-    // Save webhook event
     await c.env.DB.prepare(
       `INSERT INTO webhook_events (id, provider, event_type, payload, created_at)
        VALUES (?, 'phonepe', ?, ?, datetime('now'))`
@@ -235,18 +248,22 @@ payments.post('/webhook', async (c) => {
       .bind(genId('evt'), event.type || 'unknown', rawBody)
       .run();
 
-    // Update payment on success
-    if (event.type === 'PAYMENT_SUCCESS' && event.payload?.merchantTransactionId) {
+    // ✅ v2 webhook: state field check karo
+    const orderIdFromEvent =
+      event.payload?.merchantOrderId ||
+      event.payload?.merchantTransactionId;
+
+    if (orderIdFromEvent && (event.type === 'PAYMENT_SUCCESS' || event.state === 'COMPLETED')) {
       await c.env.DB.prepare(
         `UPDATE payments SET status = 'success' WHERE provider_payment_id = ?`
       )
-        .bind(event.payload.merchantTransactionId)
+        .bind(orderIdFromEvent)
         .run();
 
       const payment = await c.env.DB.prepare(
         'SELECT * FROM payments WHERE provider_payment_id = ?'
       )
-        .bind(event.payload.merchantTransactionId)
+        .bind(orderIdFromEvent)
         .first();
 
       if (payment) {
