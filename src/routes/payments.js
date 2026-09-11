@@ -1,22 +1,41 @@
 // src/routes/payments.js
 //
-// Provider-agnostic payment scaffold. Wire up a real gateway (Razorpay,
-// Stripe, etc.) by filling in the marked TODOs and adding the relevant
-// secrets (e.g. RAZORPAY_KEY_SECRET) via `wrangler secret put`.
+// PhonePe Payment Gateway Integration (Standard Checkout v2)
+// Docs: https://developer.phonepe.com/v1/docs/standard-checkout/
+//
+// Required Secrets (wrangler secret put <NAME>):
+//   PHONEPE_MERCHANT_ID  - Merchant ID from PhonePe Dashboard
+//   PHONEPE_SALT_KEY      - Salt Key from PhonePe Dashboard
+//   PHONEPE_SALT_INDEX   - Usually 1
+//   PHONEPE_ENV          - "sandbox" or "production"
 import { Hono } from 'hono';
 import { authMiddleware, requireAdmin } from './auth.js';
 import { ok, fail, genId } from '../lib/utils.js';
 
 const payments = new Hono();
 
-// POST /api/payments/create-order
-// Creates a local payment record tied to an existing order, ready to be
-// handed off to a payment gateway's checkout flow on the frontend.
-payments.post('/create-order', authMiddleware, async (c) => {
+// ✅ SHA-256 Helper (Cloudflare Workers Web Crypto)
+async function sha256Hex(str) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(str);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ✅ Generate PhonePe X-VERIFY Checksum
+async function generateChecksum(payloadBase64, endpoint, saltKey, saltIndex) {
+  const stringToHash = payloadBase64 + endpoint + saltKey;
+  const hash = await sha256Hex(stringToHash);
+  return `${hash}###${saltIndex}`;
+}
+
+// ✅ POST /api/payments/initiate - Create PhonePe payment session
+payments.post('/initiate', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
     const body = await c.req.json().catch(() => ({}));
-    const { orderId, provider = 'razorpay' } = body;
+    const { orderId } = body;
 
     if (!orderId) return fail(c, 'orderId is required.', 400);
 
@@ -24,83 +43,132 @@ payments.post('/create-order', authMiddleware, async (c) => {
     if (!order) return fail(c, 'Order not found.', 404);
     if (order.user_id !== user.id) return fail(c, 'You do not have access to this order.', 403);
 
-    // TODO: call the real payment gateway API here to obtain a
-    // provider-side payment/session id, e.g.:
-    //   const gatewayResponse = await fetch('https://api.razorpay.com/v1/orders', { ... });
-    // For now we generate a local placeholder reference.
-    const paymentId = genId('pay');
-    const providerPaymentId = `sandbox_${paymentId}`;
+    const { PHONEPE_MERCHANT_ID, PHONEPE_SALT_KEY, PHONEPE_SALT_INDEX, PHONEPE_ENV } = c.env;
+    
+    // PhonePe API URL (Sandbox vs Production)
+    const baseUrl = PHONEPE_ENV === 'production' 
+      ? 'https://api.phonepe.com/apis/hermes' 
+      : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
 
+    // ✅ Prepare Payload
+    const merchantTransactionId = `TXN_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const payload = {
+      merchantId: PHONEPE_MERCHANT_ID,
+      merchantTransactionId: merchantTransactionId,
+      merchantUserId: user.id,
+      amount: Math.round(order.total_amount * 100), // Convert to paise
+      redirectUrl: `${c.env.FRONTEND_URL}/payment-callback?txnId=${merchantTransactionId}`,
+      redirectMode: 'REDIRECT',
+      callbackUrl: `${c.env.FRONTEND_URL}/api/payments/webhook`,
+      mobileNumber: '',
+      paymentInstrument: {
+        type: 'PAY_PAGE'
+      }
+    };
+
+    const payloadBase64 = btoa(JSON.stringify(payload));
+    const endpoint = '/pg/v1/pay';
+    const checksum = await generateChecksum(payloadBase64, endpoint, PHONEPE_SALT_KEY, PHONEPE_SALT_INDEX);
+
+    // ✅ Call PhonePe API
+    const phonePeResponse = await fetch(`${baseUrl}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-VERIFY': checksum,
+        'accept': 'application/json'
+      },
+      body: JSON.stringify({
+        request: payloadBase64
+      })
+    });
+
+    const data = await phonePeResponse.json();
+
+    if (!phonePeResponse.ok || !data.success) {
+      return fail(c, `PhonePe Error: ${JSON.stringify(data)}`, 500);
+    }
+
+    // ✅ Save payment record in DB
+    const paymentId = genId('pay');
     await c.env.DB.prepare(
       `INSERT INTO payments (id, order_id, provider, provider_payment_id, amount, currency, status, created_at)
-       VALUES (?, ?, ?, ?, ?, 'INR', 'created', datetime('now'))`
+       VALUES (?, ?, 'phonepe', ?, ?, 'INR', 'created', datetime('now'))`
     )
-      .bind(paymentId, orderId, provider, providerPaymentId, order.total_amount)
+      .bind(paymentId, orderId, merchantTransactionId, order.total_amount)
       .run();
 
+    // ✅ Return the redirect URL to frontend
     return ok(c, {
       paymentId,
-      providerPaymentId,
-      amount: order.total_amount,
-      currency: 'INR',
-      provider,
+      merchantTransactionId,
+      redirectUrl: data.data.instrumentResponse.redirectInfo.url,
+      amount: order.total_amount
     }, undefined, 201);
   } catch (err) {
-    return fail(c, `Failed to create payment: ${err.message}`, 500);
+    return fail(c, `Failed to initiate payment: ${err.message}`, 500);
   }
 });
 
-// POST /api/payments/verify
-// Frontend calls this after the gateway checkout completes, passing back
-// whatever signature/reference the gateway provided so we can confirm it.
+// ✅ POST /api/payments/verify - Verify payment status
 payments.post('/verify', authMiddleware, async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
-    const { paymentId, providerPaymentId, signature } = body;
+    const { merchantTransactionId } = body;
 
-    if (!paymentId) return fail(c, 'paymentId is required.', 400);
+    if (!merchantTransactionId) return fail(c, 'merchantTransactionId is required.', 400);
 
-    const payment = await c.env.DB.prepare('SELECT * FROM payments WHERE id = ?').bind(paymentId).first();
-    if (!payment) return fail(c, 'Payment not found.', 404);
+    const { PHONEPE_MERCHANT_ID, PHONEPE_SALT_KEY, PHONEPE_SALT_INDEX, PHONEPE_ENV } = c.env;
+    
+    const baseUrl = PHONEPE_ENV === 'production' 
+      ? 'https://api.phonepe.com/apis/hermes' 
+      : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
 
-    // TODO: verify `signature` against the gateway's HMAC scheme using the
-    // relevant webhook/API secret from c.env, e.g. c.env.RAZORPAY_KEY_SECRET.
-    // Rejecting unverified payments here is critical in production.
-    const verified = Boolean(providerPaymentId && signature);
+    const endpoint = `/pg/v1/status/${PHONEPE_MERCHANT_ID}/${merchantTransactionId}`;
+    const checksum = await generateChecksum('', endpoint, PHONEPE_SALT_KEY, PHONEPE_SALT_INDEX);
 
-    if (!verified) {
-      await c.env.DB.prepare(`UPDATE payments SET status = 'failed' WHERE id = ?`).bind(paymentId).run();
-      return fail(c, 'Payment verification failed.', 400);
+    const phonePeResponse = await fetch(`${baseUrl}${endpoint}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-VERIFY': checksum,
+        'X-MERCHANT-ID': PHONEPE_MERCHANT_ID,
+        'accept': 'application/json'
+      }
+    });
+
+    const data = await phonePeResponse.json();
+
+    // ✅ Update payment record
+    if (data.success && data.code === 'PAYMENT_SUCCESS') {
+      await c.env.DB.prepare(
+        `UPDATE payments SET status = 'success' WHERE provider_payment_id = ?`
+      ).bind(merchantTransactionId).run();
+
+      // ✅ Update order status
+      const payment = await c.env.DB.prepare('SELECT * FROM payments WHERE provider_payment_id = ?').bind(merchantTransactionId).first();
+      if (payment) {
+        await c.env.DB.prepare(
+          `UPDATE orders SET payment_status = 'paid', status = 'confirmed', updated_at = datetime('now') WHERE id = ?`
+        ).bind(payment.order_id).run();
+      }
+
+      return ok(c, { verified: true, status: 'success' });
+    } else {
+      await c.env.DB.prepare(
+        `UPDATE payments SET status = 'failed' WHERE provider_payment_id = ?`
+      ).bind(merchantTransactionId).run();
+      return ok(c, { verified: false, status: 'failed' });
     }
-
-    await c.env.DB.prepare(
-      `UPDATE payments SET status = 'success', provider_payment_id = ? WHERE id = ?`
-    )
-      .bind(providerPaymentId, paymentId)
-      .run();
-
-    await c.env.DB.prepare(
-      `UPDATE orders SET payment_status = 'paid', status = 'confirmed', updated_at = datetime('now')
-       WHERE id = ?`
-    )
-      .bind(payment.order_id)
-      .run();
-
-    return ok(c, { paymentId, verified: true });
   } catch (err) {
     return fail(c, `Failed to verify payment: ${err.message}`, 500);
   }
 });
 
-// POST /api/payments/webhook
-// Public endpoint for the payment gateway's server-to-server webhook calls.
+// ✅ POST /api/payments/webhook - PhonePe Webhook
 payments.post('/webhook', async (c) => {
   try {
     const rawBody = await c.req.text();
-
-    // TODO: validate the webhook signature header against c.env secrets
-    // before trusting `rawBody`, e.g. using the gateway's HMAC scheme.
-
     let event;
     try {
       event = JSON.parse(rawBody);
@@ -108,12 +176,27 @@ payments.post('/webhook', async (c) => {
       return fail(c, 'Invalid webhook payload.', 400);
     }
 
+    // Save webhook event
     await c.env.DB.prepare(
       `INSERT INTO webhook_events (id, provider, event_type, payload, created_at)
-       VALUES (?, ?, ?, ?, datetime('now'))`
+       VALUES (?, 'phonepe', ?, ?, datetime('now'))`
     )
-      .bind(genId('evt'), event.provider || 'unknown', event.type || 'unknown', rawBody)
+      .bind(genId('evt'), event.type || 'unknown', rawBody)
       .run();
+
+    // Update payment if webhook gives success
+    if (event.type === 'PAYMENT_SUCCESS' && event.payload?.merchantTransactionId) {
+      await c.env.DB.prepare(
+        `UPDATE payments SET status = 'success' WHERE provider_payment_id = ?`
+      ).bind(event.payload.merchantTransactionId).run();
+
+      const payment = await c.env.DB.prepare('SELECT * FROM payments WHERE provider_payment_id = ?').bind(event.payload.merchantTransactionId).first();
+      if (payment) {
+        await c.env.DB.prepare(
+          `UPDATE orders SET payment_status = 'paid', status = 'confirmed', updated_at = datetime('now') WHERE id = ?`
+        ).bind(payment.order_id).run();
+      }
+    }
 
     return ok(c, { received: true });
   } catch (err) {
