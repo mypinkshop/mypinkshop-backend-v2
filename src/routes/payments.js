@@ -3,7 +3,7 @@
 // PhonePe Payment Gateway — Standard Checkout v2 (OAuth Token flow)
 // Docs: https://developer.phonepe.com/v1/docs/standard-checkout/
 import { Hono } from 'hono';
-import { authMiddleware, requireAdmin } from './auth.js';
+import { authMiddleware, requireAdmin, optionalAuth } from './auth.js';
 import { ok, fail, genId } from '../lib/utils.js';
 
 const payments = new Hono();
@@ -139,18 +139,18 @@ payments.post('/initiate', authMiddleware, async (c) => {
 });
 
 // ============================================================
-// ✅ POST /api/payments/verify — PUBLIC (no auth)
-// Reason: PhonePe redirect kar sakta hai kisi bhi device pe
-// User mobile se QR scan kare → mobile pe token nahi hoga
-// Frontend token check karega — guest mode mein verify call nahi karega
+// ✅ POST /api/payments/verify — Optional auth, owner-only details
 // ============================================================
-payments.post('/verify', async (c) => {
+payments.post('/verify', optionalAuth, async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
     const { merchantTransactionId } = body;
 
     if (!merchantTransactionId)
       return fail(c, 'merchantTransactionId is required.', 400);
+
+    // ✅ optionalAuth ne token verify karke user set kiya (agar valid tha)
+    const requestUser = c.get('user') || null;
 
     const accessToken = await getAccessToken(c.env);
     const { apiUrl } = getBaseUrls(c.env);
@@ -185,6 +185,7 @@ payments.post('/verify', async (c) => {
       let orderNumber = null;
       let orderTotal = null;
       let orderIdFinal = null;
+      let belongsToUser = false;
 
       if (payment) {
         await c.env.DB.prepare(
@@ -194,24 +195,35 @@ payments.post('/verify', async (c) => {
           .run();
 
         const order = await c.env.DB.prepare(
-          'SELECT order_number, total_amount FROM orders WHERE id = ?'
+          'SELECT order_number, total_amount, user_id FROM orders WHERE id = ?'
         )
           .bind(payment.order_id)
           .first();
 
         if (order) {
-          orderNumber = order.order_number;
-          orderTotal = order.total_amount;
           orderIdFinal = payment.order_id;
+
+          // ✅ Owner check — JWT payload mein `id` field hai
+          belongsToUser = !!(
+            requestUser && order.user_id === requestUser.id
+          );
+
+          if (belongsToUser) {
+            orderNumber = order.order_number;
+            orderTotal = order.total_amount;
+          }
         }
       }
 
       return ok(c, {
         verified: true,
         status: 'success',
-        orderNumber,
-        orderTotal,
-        orderId: orderIdFinal,
+        // ✅ Sirf owner ko details
+        orderNumber: belongsToUser ? orderNumber : null,
+        orderTotal: belongsToUser ? orderTotal : null,
+        orderId: belongsToUser ? orderIdFinal : null,
+        // ✅ Sab ko basic confirmation
+        confirmed: true,
       });
     }
 
