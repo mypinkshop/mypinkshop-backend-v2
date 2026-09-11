@@ -2,12 +2,6 @@
 //
 // PhonePe Payment Gateway — Standard Checkout v2 (OAuth Token flow)
 // Docs: https://developer.phonepe.com/v1/docs/standard-checkout/
-//
-// Required Secrets (Cloudflare Dashboard → Settings → Variables):
-//   PHONEPE_CLIENT_ID      - Client ID from PhonePe Dashboard
-//   PHONEPE_CLIENT_SECRET  - Client Secret from PhonePe Dashboard
-//   PHONEPE_CLIENT_VERSION - Client Version (usually 1)
-//   PHONEPE_ENV            - "sandbox" or "production"
 import { Hono } from 'hono';
 import { authMiddleware, requireAdmin } from './auth.js';
 import { ok, fail, genId } from '../lib/utils.js';
@@ -15,16 +9,14 @@ import { ok, fail, genId } from '../lib/utils.js';
 const payments = new Hono();
 
 // ============================================================
-// ✅ Environment URLs (PhonePe Docs ke hisaab se)
+// ✅ Environment URLs
 // ============================================================
 function getBaseUrls(env) {
   const isProd = env.PHONEPE_ENV === 'production';
   return {
-    // OAuth token ke liye
     authUrl: isProd
       ? 'https://api.phonepe.com/apis/identity-manager'
       : 'https://api-preprod.phonepe.com/apis/pg-sandbox',
-    // Pay / Status / Refund ke liye
     apiUrl: isProd
       ? 'https://api.phonepe.com/apis/pg'
       : 'https://api-preprod.phonepe.com/apis/pg-sandbox',
@@ -62,7 +54,7 @@ async function getAccessToken(env) {
 }
 
 // ============================================================
-// ✅ POST /api/payments/initiate — Payment create karo
+// ✅ POST /api/payments/initiate
 // ============================================================
 payments.post('/initiate', authMiddleware, async (c) => {
   try {
@@ -82,20 +74,17 @@ payments.post('/initiate', authMiddleware, async (c) => {
     if (order.user_id !== user.id)
       return fail(c, 'You do not have access to this order.', 403);
 
-    // ✅ Step 1: OAuth token lo
     const accessToken = await getAccessToken(c.env);
     const { apiUrl } = getBaseUrls(c.env);
 
-    // ✅ merchantOrderId unique rakho
     const merchantOrderId = `TXN_${Date.now()}_${Math.floor(
       Math.random() * 1000
     )}`;
 
-    // ✅ Step 2: Payload banao (Standard Checkout v2 format)
     const payload = {
       merchantOrderId: merchantOrderId,
-      amount: Math.round(order.total_amount * 100), // paise
-      expireAfter: 1200, // 20 minutes
+      amount: Math.round(order.total_amount * 100),
+      expireAfter: 1200,
       metaInfo: {
         udf1: order.id,
         udf2: user.id,
@@ -109,7 +98,6 @@ payments.post('/initiate', authMiddleware, async (c) => {
       },
     };
 
-    // ✅ Step 3: PhonePe Create Payment API call (v2 endpoint)
     const phonePeResponse = await fetch(`${apiUrl}/checkout/v2/pay`, {
       method: 'POST',
       headers: {
@@ -126,7 +114,6 @@ payments.post('/initiate', authMiddleware, async (c) => {
       return fail(c, `PhonePe Error: ${JSON.stringify(data)}`, 500);
     }
 
-    // ✅ Save payment record
     const paymentId = genId('pay');
     await c.env.DB.prepare(
       `INSERT INTO payments (id, order_id, provider, provider_payment_id, amount, currency, status, created_at)
@@ -135,7 +122,6 @@ payments.post('/initiate', authMiddleware, async (c) => {
       .bind(paymentId, orderId, merchantOrderId, order.total_amount)
       .run();
 
-    // ✅ Redirect URL frontend ko bhejo
     return ok(
       c,
       {
@@ -153,7 +139,7 @@ payments.post('/initiate', authMiddleware, async (c) => {
 });
 
 // ============================================================
-// ✅ POST /api/payments/verify — Payment status check
+// ✅ POST /api/payments/verify
 // ============================================================
 payments.post('/verify', authMiddleware, async (c) => {
   try {
@@ -163,11 +149,9 @@ payments.post('/verify', authMiddleware, async (c) => {
     if (!merchantTransactionId)
       return fail(c, 'merchantTransactionId is required.', 400);
 
-    // ✅ OAuth token lo
     const accessToken = await getAccessToken(c.env);
     const { apiUrl } = getBaseUrls(c.env);
 
-    // ✅ Order Status API (v2 endpoint)
     const endpoint = `/checkout/v2/order/${merchantTransactionId}/status`;
 
     const phonePeResponse = await fetch(`${apiUrl}${endpoint}`, {
@@ -181,7 +165,7 @@ payments.post('/verify', authMiddleware, async (c) => {
 
     const data = await phonePeResponse.json().catch(() => ({}));
 
-    // ✅ PhonePe v2 state: COMPLETED, FAILED, PENDING
+    // ✅ COMPLETED
     if (data.state === 'COMPLETED') {
       await c.env.DB.prepare(
         `UPDATE payments SET status = 'success' WHERE provider_payment_id = ?`
@@ -195,16 +179,41 @@ payments.post('/verify', authMiddleware, async (c) => {
         .bind(merchantTransactionId)
         .first();
 
+      let orderNumber = null;
+      let orderTotal = null;
+      let orderIdFinal = null;
+
       if (payment) {
         await c.env.DB.prepare(
           `UPDATE orders SET payment_status = 'paid', status = 'confirmed', updated_at = datetime('now') WHERE id = ?`
         )
           .bind(payment.order_id)
           .run();
+
+        const order = await c.env.DB.prepare(
+          'SELECT order_number, total_amount FROM orders WHERE id = ?'
+        )
+          .bind(payment.order_id)
+          .first();
+
+        if (order) {
+          orderNumber = order.order_number;
+          orderTotal = order.total_amount;
+          orderIdFinal = payment.order_id;
+        }
       }
 
-      return ok(c, { verified: true, status: 'success' });
-    } else if (data.state === 'FAILED') {
+      return ok(c, {
+        verified: true,
+        status: 'success',
+        orderNumber,
+        orderTotal,
+        orderId: orderIdFinal,
+      });
+    }
+
+    // ❌ FAILED
+    if (data.state === 'FAILED') {
       await c.env.DB.prepare(
         `UPDATE payments SET status = 'failed' WHERE provider_payment_id = ?`
       )
@@ -216,13 +225,14 @@ payments.post('/verify', authMiddleware, async (c) => {
         status: 'failed',
         phonepeState: data.state,
       });
-    } else {
-      return ok(c, {
-        verified: false,
-        status: 'pending',
-        phonepeState: data.state || 'PENDING',
-      });
     }
+
+    // ⏳ PENDING
+    return ok(c, {
+      verified: false,
+      status: 'pending',
+      phonepeState: data.state || 'PENDING',
+    });
   } catch (err) {
     return fail(c, `Failed to verify payment: ${err.message}`, 500);
   }
@@ -248,7 +258,6 @@ payments.post('/webhook', async (c) => {
       .bind(genId('evt'), event.type || 'unknown', rawBody)
       .run();
 
-    // ✅ v2 webhook: state field check karo
     const orderIdFromEvent =
       event.payload?.merchantOrderId ||
       event.payload?.merchantTransactionId;
