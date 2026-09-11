@@ -53,3 +53,118 @@ export function safeJsonArray(text) {
 export function toBool(value) {
   return value === 1 || value === true || value === '1' || value === 'true';
 }
+
+// ============================================================
+// ✅ GLOBAL STORAGE MANAGER (Frontend ke liye)
+// Poori website par kaam karega — storage full hone par auto-cleanup
+// ============================================================
+
+// 1️⃣ Safe SetItem - Auto cleanup if quota exceeded
+export function safeSetItem(storage, key, value) {
+  try {
+    storage.setItem(key, value);
+    return true;
+  } catch (e) {
+    if (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014) {
+      console.warn('⚠️ Storage full, auto-cleanup starting...');
+      
+      const keysToRemove = [];
+      for (let i = 0; i < storage.length; i++) {
+        const k = storage.key(i);
+        if (k && (
+          k.startsWith('product_') || 
+          k.startsWith('products_cache') || 
+          k.startsWith('banners_cache') ||
+          k.startsWith('product_cache_time_') ||
+          k.startsWith('checkout_')
+        )) {
+          keysToRemove.push(k);
+        }
+      }
+      keysToRemove.forEach(k => storage.removeItem(k));
+      
+      try {
+        storage.setItem(key, value);
+        console.log('✅ Storage cleanup successful');
+        return true;
+      } catch (e2) {
+        console.warn('❌ Storage still full, skipping this save');
+        return false;
+      }
+    }
+    return false;
+  }
+}
+
+// 2️⃣ Safe GetItem
+export function safeGetItem(storage, key) {
+  try {
+    return storage.getItem(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+// 3️⃣ Auto Cleanup - Har 24 ghante mein purana data hatao
+export function runAutoCleanup() {
+  try {
+    const lastCleanup = localStorage.getItem('last_auto_cleanup');
+    const now = Date.now();
+    const ONE_DAY = 24 * 60 * 60 * 1000;
+    
+    if (!lastCleanup || (now - parseInt(lastCleanup)) > ONE_DAY) {
+      const keysToRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && (
+          k.startsWith('product_') || 
+          k.startsWith('products_cache') || 
+          k.startsWith('banners_cache') ||
+          k.startsWith('product_cache_time_')
+        )) {
+          keysToRemove.push(k);
+        }
+      }
+      keysToRemove.forEach(k => localStorage.removeItem(k));
+      localStorage.setItem('last_auto_cleanup', now.toString());
+      console.log('✅ Auto-cleanup complete');
+    }
+  } catch (e) {
+    console.warn('Cleanup error:', e);
+  }
+}
+
+// 4️⃣ Clear All Cache (Manual button ke liye)
+export function clearAllCache() {
+  const keysToRemove = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && (
+      k.startsWith('product_') || 
+      k.startsWith('products_cache') || 
+      k.startsWith('banners_cache') ||
+      k.startsWith('product_cache_time_') ||
+      k.startsWith('checkout_')
+    )) {
+      keysToRemove.push(k);
+    }
+  }
+  keysToRemove.forEach(k => localStorage.removeItem(k));
+  console.log(`✅ Cleared ${keysToRemove.length} cache items`);
+}
+
+// 5️⃣ Storage Health Check (Optional)
+export function getStorageUsage() {
+  let total = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k) {
+      total += (localStorage.getItem(k) || '').length;
+    }
+  }
+  return {
+    bytes: total,
+    kb: (total / 1024).toFixed(2),
+    percent: ((total / (5 * 1024 * 1024)) * 100).toFixed(2)
+  };
+}
