@@ -2,9 +2,6 @@
 import { Hono } from 'hono';
 import { fail, genId } from '../lib/utils.js';
 import { signJWT } from '../lib/jwt.js';
-// ✅ FIX: this file used to have its own copy-pasted Zoho implementation
-// that could silently drift out of sync with src/lib/email.js. Now both
-// auth.js (forgot-password) and otp.js share the exact same sender.
 import { sendEmail } from '../lib/email.js';
 
 const otp = new Hono();
@@ -13,24 +10,85 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-/**
- * ⚠️ Zoho Mail API requires 5 secrets that were MISSING from wrangler.toml:
- *   ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REFRESH_TOKEN, ZOHO_ACCOUNT_ID,
- *   ZOHO_FROM_EMAIL
- * wrangler.toml only had ZOHO_PASSWORD (unused by this OAuth-based code) and
- * FROM_EMAIL (wrong name). This is why every OTP/reset email was failing.
- * See wrangler.toml comments + README section added for exact setup steps.
- */
+// ✅ WhatsApp OTP bhejne ka function
+const sendWhatsAppOTP = async (c, phone, otpCode) => {
+  try {
+    const phoneId = c.env.WHATSAPP_PHONE_ID;
+    const token = c.env.WHATSAPP_TOKEN;
+    const templateName = c.env.WHATSAPP_TEMPLATE_NAME;
+    const templateLang = c.env.WHATSAPP_TEMPLATE_LANG || 'en';
+
+    if (!phoneId || !token || !templateName) {
+      return { ok: false, error: 'WhatsApp credentials missing' };
+    }
+
+    // Phone number clean karo (sirf digits rakho, + hatao)
+    const cleanPhone = String(phone).replace(/\D/g, '');
+
+    // India ka number hai toh 91 prefix add karo agar nahi hai
+    const fullPhone = cleanPhone.startsWith('91') ? cleanPhone : `91${cleanPhone}`;
+
+    const response = await fetch(
+      `https://graph.facebook.com/v21.0/${phoneId}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to: fullPhone,
+          type: 'template',
+          template: {
+            name: templateName,
+            language: { code: templateLang },
+            components: [
+              {
+                type: 'body',
+                parameters: [
+                  { type: 'text', text: otpCode }
+                ]
+              },
+              {
+                type: 'button',
+                sub_type: 'url',
+                index: '0',
+                parameters: [
+                  { type: 'text', text: otpCode }
+                ]
+              }
+            ]
+          }
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error('WhatsApp API error:', data);
+      return { ok: false, error: data?.error?.message || 'WhatsApp send failed' };
+    }
+
+    return { ok: true, data };
+  } catch (err) {
+    console.error('WhatsApp exception:', err);
+    return { ok: false, error: err.message };
+  }
+};
 
 // POST /api/otp/send
 otp.post('/send', async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
-    const { email } = body;
+    const { email, phone } = body;
 
     if (!email) return fail(c, 'Email is required.', 400);
+    if (!phone) return fail(c, 'Phone number is required.', 400);
 
     const cleanEmail = String(email).toLowerCase().trim();
+    const cleanPhone = String(phone).replace(/\D/g, '');
 
     const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
     if (existingUser) {
@@ -44,9 +102,10 @@ otp.post('/send', async (c) => {
     const id = genId('otp');
 
     await c.env.DB.prepare(
-      `INSERT INTO otp_verifications (id, email, otp_code, is_verified, created_at, expires_at) VALUES (?, ?, ?, 0, datetime('now'), ?)`
-    ).bind(id, cleanEmail, otpCode, expiresAt).run();
+      `INSERT INTO otp_verifications (id, email, phone, otp_code, is_verified, created_at, expires_at) VALUES (?, ?, ?, ?, 0, datetime('now'), ?)`
+    ).bind(id, cleanEmail, cleanPhone, otpCode, expiresAt).run();
 
+    // ✅ Email bhejo
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <h2 style="color: #ec4899;">MyPinkShop</h2>
@@ -55,11 +114,23 @@ otp.post('/send', async (c) => {
         <p>This OTP is valid for 10 minutes.</p>
       </div>
     `;
-
     const emailResult = await sendEmail(c, cleanEmail, 'Your MyPinkShop OTP', emailHtml);
-    if (!emailResult.ok) return fail(c, `Email API Error: ${emailResult.error}`, 500);
 
-    return c.json({ success: true, message: 'OTP sent successfully!', expiresIn: 600 });
+    // ✅ WhatsApp bhejo
+    const waResult = await sendWhatsAppOTP(c, cleanPhone, otpCode);
+
+    // Agar dono fail ho gaye toh error do
+    if (!emailResult.ok && !waResult.ok) {
+      return fail(c, `Email failed: ${emailResult.error}. WhatsApp failed: ${waResult.error}`, 500);
+    }
+
+    // Jo bhi successful hua, uska message do
+    let message = 'OTP sent successfully!';
+    if (emailResult.ok && waResult.ok) message = 'OTP sent to your email and WhatsApp!';
+    else if (emailResult.ok) message = 'OTP sent to your email!';
+    else message = 'OTP sent to your WhatsApp!';
+
+    return c.json({ success: true, message, expiresIn: 600 });
   } catch (err) {
     return fail(c, `Failed to send OTP: ${err.message}`, 500);
   }
@@ -95,11 +166,15 @@ otp.post('/verify', async (c) => {
     if (!existingUser) {
       userId = genId('usr');
       await c.env.DB.prepare(
-        `INSERT INTO users (id, name, email, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, 'customer', datetime('now'), datetime('now'))`
-      ).bind(userId, cleanEmail.split('@')[0], cleanEmail, '').run();
+        `INSERT INTO users (id, name, email, phone, password, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'customer', datetime('now'), datetime('now'))`
+      ).bind(userId, cleanEmail.split('@')[0], cleanEmail, otpRecord.phone || null, '').run();
+    } else if (otpRecord.phone) {
+      // Existing user ka phone update karo agar naya hai
+      await c.env.DB.prepare(
+        `UPDATE users SET phone = ?, updated_at = datetime('now') WHERE id = ?`
+      ).bind(otpRecord.phone, userId).run();
     }
 
-    // Issue a real, verifiable JWT
     const userName = existingUser?.name || cleanEmail.split('@')[0];
     const userRole = existingUser?.role || 'customer';
     const token = await signJWT(
@@ -127,11 +202,13 @@ otp.post('/verify', async (c) => {
 otp.post('/resend', async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
-    const { email } = body;
+    const { email, phone } = body;
 
     if (!email) return fail(c, 'Email is required.', 400);
+    if (!phone) return fail(c, 'Phone number is required.', 400);
 
     const cleanEmail = String(email).toLowerCase().trim();
+    const cleanPhone = String(phone).replace(/\D/g, '');
 
     const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(cleanEmail).first();
     if (existingUser) {
@@ -145,8 +222,8 @@ otp.post('/resend', async (c) => {
     const id = genId('otp');
 
     await c.env.DB.prepare(
-      `INSERT INTO otp_verifications (id, email, otp_code, is_verified, created_at, expires_at) VALUES (?, ?, ?, 0, datetime('now'), ?)`
-    ).bind(id, cleanEmail, otpCode, expiresAt).run();
+      `INSERT INTO otp_verifications (id, email, phone, otp_code, is_verified, created_at, expires_at) VALUES (?, ?, ?, ?, 0, datetime('now'), ?)`
+    ).bind(id, cleanEmail, cleanPhone, otpCode, expiresAt).run();
 
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -155,11 +232,19 @@ otp.post('/resend', async (c) => {
         <h1 style="font-size: 48px; letter-spacing: 10px; color: #ec4899;">${otpCode}</h1>
       </div>
     `;
-
     const emailResult = await sendEmail(c, cleanEmail, 'Your MyPinkShop OTP', emailHtml);
-    if (!emailResult.ok) return fail(c, `Email API Error: ${emailResult.error}`, 500);
+    const waResult = await sendWhatsAppOTP(c, cleanPhone, otpCode);
 
-    return c.json({ success: true, message: 'OTP resent successfully!', expiresIn: 600 });
+    if (!emailResult.ok && !waResult.ok) {
+      return fail(c, `Email failed: ${emailResult.error}. WhatsApp failed: ${waResult.error}`, 500);
+    }
+
+    let message = 'OTP sent successfully!';
+    if (emailResult.ok && waResult.ok) message = 'OTP sent to your email and WhatsApp!';
+    else if (emailResult.ok) message = 'OTP sent to your email!';
+    else message = 'OTP sent to your WhatsApp!';
+
+    return c.json({ success: true, message, expiresIn: 600 });
   } catch (err) {
     return fail(c, `Failed to resend OTP: ${err.message}`, 500);
   }
