@@ -4,6 +4,7 @@ import { signJWT, verifyJWT } from '../lib/jwt.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
 import { ok, fail, genId } from '../lib/utils.js';
 import { sendEmail } from '../lib/email.js';
+import { sendPasswordResetLink } from '../lib/whatsapp.js';   // ✅ NEW
 
 const auth = new Hono();
 
@@ -11,12 +12,6 @@ const auth = new Hono();
 /* Middleware                                                             */
 /* --------------------------------------------------------------------- */
 
-/**
- * authMiddleware
- * Reads `Authorization: Bearer <token>`, verifies the JWT, and attaches
- * the decoded payload to the request context as c.get('user').
- * Responds 401 if the token is missing or invalid.
- */
 export async function authMiddleware(c, next) {
   const header = c.req.header('Authorization') || '';
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
@@ -34,10 +29,6 @@ export async function authMiddleware(c, next) {
   }
 }
 
-/**
- * requireAdmin
- * Must run after authMiddleware. Ensures c.get('user').role === 'admin'.
- */
 export async function requireAdmin(c, next) {
   const user = c.get('user');
   if (!user || user.role !== 'admin') {
@@ -46,12 +37,6 @@ export async function requireAdmin(c, next) {
   await next();
 }
 
-/**
- * optionalAuth
- * Attaches the user to context if a valid token is present, but never
- * blocks the request if it's missing/invalid. Useful for public endpoints
- * that want to lightly personalize output when a user is logged in.
- */
 export async function optionalAuth(c, next) {
   const header = c.req.header('Authorization') || '';
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
@@ -103,7 +88,6 @@ auth.post('/register', async (c) => {
 
     const token = await signJWT({ id, email: email.toLowerCase().trim(), role: 'customer', name }, c.env.JWT_SECRET);
 
-    // ✅ Same shape fix as /login — see comment there.
     const userPayload = { id, _id: id, name, email: email.toLowerCase().trim(), role: 'customer' };
     return c.json({
       success: true,
@@ -151,15 +135,6 @@ auth.post('/login', async (c) => {
       c.env.JWT_SECRET
     );
 
-    // ✅ CRITICAL FIX: previously this returned only { success, data: {...} }.
-    // Three different frontend pages call this SAME /api/auth/login route
-    // and each reads a different shape:
-    //   - Login.jsx / AuthContext.login()  → top-level `token` + `user.{_id,name,email,role}`
-    //   - AdminLogin.jsx                   → fully flat `token`,`role`,`email`,`name`,`_id`
-    // Neither matched the old { data: {...} } shape (data.user was
-    // `undefined`, so destructuring it threw and login always failed).
-    // This response now includes the fields at every level every existing
-    // page actually reads, so nothing else needs to change.
     const userPayload = { id: user.id, _id: user.id, name: user.name, email: user.email, role: user.role };
     return c.json({
       success: true,
@@ -194,7 +169,7 @@ auth.get('/me', authMiddleware, async (c) => {
   }
 });
 
-// POST /api/auth/logout (stateless JWT: client just discards the token)
+// POST /api/auth/logout (stateless JWT)
 auth.post('/logout', authMiddleware, async (c) => {
   return ok(c, { message: 'Logged out successfully.' });
 });
@@ -214,15 +189,12 @@ auth.post('/forgot-password', async (c) => {
 
     const cleanEmail = String(email).toLowerCase().trim();
 
-    const user = await c.env.DB.prepare('SELECT id, name FROM users WHERE email = ?')
+    // ✅ CHANGE 1: phone भी select किया (WhatsApp के लिए)
+    const user = await c.env.DB.prepare('SELECT id, name, phone FROM users WHERE email = ?')
       .bind(cleanEmail)
       .first();
 
     if (!user) {
-      // NOTE: this reveals whether an email is registered, which is a
-      // known trade-off for a friendlier UX (most ecommerce sites do this).
-      // If you'd rather not leak account existence, switch this back to a
-      // generic success message instead.
       return fail(c, "We couldn't find an account with that email address. Please check and try again, or sign up for a new account.", 404);
     }
 
@@ -255,12 +227,30 @@ auth.post('/forgot-password', async (c) => {
       </div>
     `;
 
+    // 📧 Email भेजें
     const emailResult = await sendEmail(c, cleanEmail, 'Reset your MyPinkShop password', emailHtml);
-    if (!emailResult.ok) {
-      return fail(c, `Email API Error: ${emailResult.error}`, 500);
+
+    // ✅ CHANGE 2: WhatsApp भी भेजें (best-effort)
+    let whatsappResult = { success: false, skipped: true };
+    if (user.phone) {
+      whatsappResult = await sendPasswordResetLink(c.env, user.phone, user.name, resetToken);
+      if (!whatsappResult.success) {
+        console.error('[WhatsApp reset] failed:', whatsappResult.error);
+      }
     }
 
-    return ok(c, { message: `A password reset link has been sent to ${cleanEmail}. Please check your inbox (and spam folder).` });
+    // ✅ CHANGE 3: दोनों channels fail हों तो error
+    if (!emailResult.ok && !whatsappResult.success) {
+      return fail(c, 'Could not send reset link. Please try again later.', 500);
+    }
+
+    return ok(c, {
+      message: `A password reset link has been sent to ${cleanEmail}${user.phone ? ' and your WhatsApp' : ''}. Please check your inbox (and spam folder).`,
+      channels: {
+        email: emailResult.ok,
+        whatsapp: whatsappResult.success === true,
+      },
+    });
   } catch (err) {
     return fail(c, `Failed to process request: ${err.message}`, 500);
   }
@@ -270,9 +260,13 @@ auth.post('/forgot-password', async (c) => {
 // Body: { password }
 auth.post('/reset-password/:token', async (c) => {
   try {
-    const token = c.req.param('token');
+    const token = c.req.param('token')?.trim();   // ✅ trim trailing spaces
     const body = await c.req.json().catch(() => ({}));
     const { password } = body;
+
+    if (!token) {
+      return fail(c, 'Missing reset token.', 400);
+    }
 
     if (!password || password.length < 6) {
       return fail(c, 'Password must be at least 6 characters.', 400);
