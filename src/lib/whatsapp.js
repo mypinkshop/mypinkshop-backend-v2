@@ -3,22 +3,59 @@
 
 const GRAPH_URL = 'https://graph.facebook.com/v21.0';
 
+/* --------------------------------------------------------------------- */
+/* Helpers                                                                */
+/* --------------------------------------------------------------------- */
+
 /**
- * Order confirmation template bhejo
- * Meta Dashboard pe template name: order_confirmation
- * Template body: "Hi {{1}}, your order {{2}} of {{3}} is confirmed!"
+ * Normalize phone to WhatsApp format: 91XXXXXXXXXX (no +, no spaces)
  */
+function normalizePhone(raw) {
+  let digits = String(raw || '').replace(/\D/g, '');
+  if (!digits) return '';
+
+  // 10-digit Indian number → prefix 91
+  if (digits.length === 10) return '91' + digits;
+
+  // 11-digit starting with 0 → strip 0, prefix 91
+  if (digits.length === 11 && digits.startsWith('0')) {
+    return '91' + digits.slice(1);
+  }
+
+  // Already has 91 country code
+  if (digits.length === 12 && digits.startsWith('91')) {
+    return digits;
+  }
+
+  // Fallback: last 12 digits (best effort)
+  return digits.slice(-12);
+}
+
+function getCreds(env) {
+  return {
+    phoneId: env.WHATSAPP_PHONE_ID,       // ✅ Cloudflare नाम
+    token: env.WHATSAPP_TOKEN,            // ✅ Cloudflare नाम
+    templateName: env.WHATSAPP_TEMPLATE_NAME || 'order_confirmation',
+    templateLang: env.WHATSAPP_TEMPLATE_LANG || 'en',
+  };
+}
+
+/* --------------------------------------------------------------------- */
+/* Order confirmation                                                     */
+/* --------------------------------------------------------------------- */
+
 export async function sendOrderNotification(env, to, orderNumber, total) {
-  const phoneId = env.WHATSAPP_PHONE_NUMBER_ID;
-  const token = env.WHATSAPP_API_TOKEN;
+  const { phoneId, token } = getCreds(env);
 
   if (!phoneId || !token) {
     console.warn('⚠️ WhatsApp credentials missing, skipping notification');
     return { success: false, error: 'Missing credentials' };
   }
 
-  // ✅ Phone number format — no + prefix
-  const cleanPhone = String(to).replace(/\D/g, '').slice(-10);
+  const cleanPhone = normalizePhone(to);
+  if (!cleanPhone) {
+    return { success: false, error: 'Invalid phone number' };
+  }
 
   const payload = {
     messaging_product: 'whatsapp',
@@ -26,15 +63,15 @@ export async function sendOrderNotification(env, to, orderNumber, total) {
     to: cleanPhone,
     type: 'template',
     template: {
-      name: 'order_confirmation',        // ✅ Meta pe approved template name
-      language: { code: 'en' },
+      name: 'order_confirmation',
+      language: { code: 'en' },              // ✅ अगर Meta पर 'en' में approve है
       components: [
         {
           type: 'body',
           parameters: [
-            { type: 'text', text: 'Customer' },           // {{1}} — name
-            { type: 'text', text: orderNumber },          // {{2}} — MPS-09-...
-            { type: 'text', text: `₹${total}` },          // {{3}} — amount
+            { type: 'text', text: 'Customer' },
+            { type: 'text', text: orderNumber },
+            { type: 'text', text: `₹${total}` },
           ],
         },
       ],
@@ -55,10 +92,10 @@ export async function sendOrderNotification(env, to, orderNumber, total) {
 
     if (!res.ok) {
       console.error('❌ WhatsApp send failed:', data);
-      return { success: false, error: data.error?.message || 'Send failed' };
+      return { success: false, error: data.error?.message || 'Send failed', data };
     }
 
-    console.log('✅ WhatsApp message sent:', data.messages?.[0]?.id);
+    console.log('✅ WhatsApp order sent:', data.messages?.[0]?.id);
     return { success: true, messageId: data.messages?.[0]?.id };
   } catch (err) {
     console.error('❌ WhatsApp error:', err);
@@ -66,13 +103,90 @@ export async function sendOrderNotification(env, to, orderNumber, total) {
   }
 }
 
+/* --------------------------------------------------------------------- */
+/* Password reset                                                         */
+/* --------------------------------------------------------------------- */
+
 /**
- * Simple text message (24-hour window ke andar)
+ * Send password reset link via WhatsApp template.
+ * Requires template: password_reset (en) with dynamic URL button {{1}}
  */
+export async function sendPasswordResetLink(env, to, name, resetToken) {
+  const { phoneId, token } = getCreds(env);
+
+  if (!phoneId || !token) {
+    console.warn('⚠️ WhatsApp credentials missing, skipping reset message');
+    return { success: false, error: 'Missing credentials' };
+  }
+
+  const cleanPhone = normalizePhone(to);
+  if (!cleanPhone) {
+    return { success: false, error: 'Invalid phone number' };
+  }
+
+  const payload = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to: cleanPhone,
+    type: 'template',
+    template: {
+      name: 'password_reset',
+      language: { code: 'en' },                     // ✅ 'en' में approve है
+      components: [
+        {
+          type: 'body',
+          parameters: [
+            { type: 'text', text: name || 'there' },   // Body {{1}}
+          ],
+        },
+        {
+          type: 'button',
+          sub_type: 'url',
+          index: 0,
+          parameters: [
+            { type: 'text', text: resetToken },        // Button URL {{1}}
+          ],
+        },
+      ],
+    },
+  };
+
+  try {
+    const res = await fetch(`${GRAPH_URL}/${phoneId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      console.error('❌ Reset WhatsApp failed:', data);
+      return { success: false, error: data.error?.message || 'Send failed', data };
+    }
+
+    console.log('✅ Reset WhatsApp sent:', data.messages?.[0]?.id);
+    return { success: true, messageId: data.messages?.[0]?.id };
+  } catch (err) {
+    console.error('❌ Reset WhatsApp error:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+/* --------------------------------------------------------------------- */
+/* Free-form text (24-hour window)                                        */
+/* --------------------------------------------------------------------- */
+
 export async function sendTextMessage(env, to, body) {
-  const phoneId = env.WHATSAPP_PHONE_NUMBER_ID;
-  const token = env.WHATSAPP_API_TOKEN;
-  const cleanPhone = String(to).replace(/\D/g, '').slice(-10);
+  const { phoneId, token } = getCreds(env);
+  const cleanPhone = normalizePhone(to);
+
+  if (!phoneId || !token || !cleanPhone) {
+    return { error: 'Invalid params or missing credentials' };
+  }
 
   try {
     const res = await fetch(`${GRAPH_URL}/${phoneId}/messages`, {
