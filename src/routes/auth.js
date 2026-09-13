@@ -169,7 +169,7 @@ auth.get('/me', authMiddleware, async (c) => {
   }
 });
 
-// POST /api/auth/logout (stateless JWT)
+// POST /api/auth/logout
 auth.post('/logout', authMiddleware, async (c) => {
   return ok(c, { message: 'Logged out successfully.' });
 });
@@ -178,31 +178,71 @@ auth.post('/logout', authMiddleware, async (c) => {
 /* Forgot / reset password                                                */
 /* --------------------------------------------------------------------- */
 
+// ============================================================
 // POST /api/auth/forgot-password
-// Body: { email }
+// Body: { email } OR { phone }
+//
+// EMAIL mode  → email पर link भेजे (WhatsApp भी अगर registered हो)
+// PHONE mode  → WhatsApp पर link भेजे (Email भी अगर registered हो)
+// ============================================================
 auth.post('/forgot-password', async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
-    const { email } = body;
+    const { email, phone } = body;
 
-    if (!email) return fail(c, 'Please enter your email address.', 400);
-
-    const cleanEmail = String(email).toLowerCase().trim();
-
-    // ✅ CHANGE 1: phone भी select किया (WhatsApp के लिए)
-    const user = await c.env.DB.prepare('SELECT id, name, phone FROM users WHERE email = ?')
-      .bind(cleanEmail)
-      .first();
-
-    if (!user) {
-      return fail(c, "We couldn't find an account with that email address. Please check and try again, or sign up for a new account.", 404);
+    // दोनों में से एक तो ज़रूरी है
+    if (!email && !phone) {
+      return fail(c, 'Please enter your email address or WhatsApp number.', 400);
     }
 
-    // Invalidate any older unused reset tokens for this user first.
-    await c.env.DB.prepare('DELETE FROM password_resets WHERE user_id = ?').bind(user.id).run();
+    let user = null;
+
+    // ============= EMAIL से LOOKUP =============
+    if (email) {
+      const cleanEmail = String(email).toLowerCase().trim();
+
+      if (!cleanEmail.includes('@')) {
+        return fail(c, 'Please enter a valid email address.', 400);
+      }
+
+      user = await c.env.DB.prepare(
+        'SELECT id, name, email, phone FROM users WHERE email = ?'
+      )
+        .bind(cleanEmail)
+        .first();
+
+      if (!user) {
+        return fail(c, "We couldn't find an account with that email address. Please check and try again, or sign up for a new account.", 404);
+      }
+    }
+    // ============= PHONE से LOOKUP =============
+    else {
+      const cleanPhone = String(phone).replace(/\D/g, '').slice(-10);
+
+      if (cleanPhone.length !== 10) {
+        return fail(c, 'Please enter a valid 10-digit WhatsApp number.', 400);
+      }
+
+      // DB में phone अलग-अलग format में हो सकता है → flexible match
+      user = await c.env.DB.prepare(
+        `SELECT id, name, email, phone FROM users 
+         WHERE REPLACE(REPLACE(REPLACE(REPLACE(phone, '+', ''), ' ', ''), '-', ''), '(', '') LIKE ?`
+      )
+        .bind(`%${cleanPhone}`)
+        .first();
+
+      if (!user) {
+        return fail(c, "We couldn't find an account with that WhatsApp number. Please check and try again.", 404);
+      }
+    }
+
+    // Purane unused reset tokens delete करें
+    await c.env.DB.prepare('DELETE FROM password_resets WHERE user_id = ?')
+      .bind(user.id)
+      .run();
 
     const resetToken = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 minutes
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     const id = genId('pwr');
 
     await c.env.DB.prepare(
@@ -215,39 +255,60 @@ auth.post('/forgot-password', async (c) => {
     const frontendUrl = c.env.FRONTEND_URL || 'https://www.mypinkshop.com';
     const resetLink = `${frontendUrl}/reset-password/${resetToken}`;
 
-    const emailHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-        <h2 style="color: #ec4899;">MyPinkShop</h2>
-        <p>Hi ${user.name || ''},</p>
-        <p>We received a request to reset your password. Click the button below to choose a new one:</p>
-        <p style="text-align: center; margin: 30px 0;">
-          <a href="${resetLink}" style="background: #ec4899; color: white; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: bold;">Reset Password</a>
-        </p>
-        <p style="color: #888; font-size: 13px;">This link expires in 30 minutes. If you didn't request this, you can safely ignore this email.</p>
-      </div>
-    `;
+    // ============================================================
+    // 📧 EMAIL भेजें (अगर user का real email है)
+    // ============================================================
+    let emailResult = { ok: false, skipped: true };
+    const hasRealEmail = user.email && !user.email.endsWith('@phone.mypinkshop.com');
 
-    // 📧 Email भेजें
-    const emailResult = await sendEmail(c, cleanEmail, 'Reset your MyPinkShop password', emailHtml);
+    if (hasRealEmail) {
+      const emailHtml = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #ec4899;">MyPinkShop</h2>
+          <p>Hi ${user.name || ''},</p>
+          <p>We received a request to reset your password. Click the button below to choose a new one:</p>
+          <p style="text-align: center; margin: 30px 0;">
+            <a href="${resetLink}" style="background: #ec4899; color: white; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-weight: bold;">Reset Password</a>
+          </p>
+          <p style="color: #888; font-size: 13px;">This link expires in 30 minutes. If you didn't request this, you can safely ignore this email.</p>
+        </div>
+      `;
 
-    // ✅ CHANGE 2: WhatsApp भी भेजें (best-effort)
+      const emailResponse = await sendEmail(c, user.email, 'Reset your MyPinkShop password', emailHtml);
+      emailResult = { ok: emailResponse.ok, skipped: false, error: emailResponse.error };
+
+      if (!emailResponse.ok) {
+        console.error('[Email reset] failed:', emailResponse.error);
+      }
+    }
+
+    // ============================================================
+    // 📱 WHATSAPP भेजें (अगर user का phone registered है)
+    // ============================================================
     let whatsappResult = { success: false, skipped: true };
+
     if (user.phone) {
       whatsappResult = await sendPasswordResetLink(c.env, user.phone, user.name, resetToken);
+
       if (!whatsappResult.success) {
         console.error('[WhatsApp reset] failed:', whatsappResult.error);
       }
     }
 
-    // ✅ CHANGE 3: दोनों channels fail हों तो error
+    // ============================================================
+    // दोनों channels fail हों तो error
+    // ============================================================
     if (!emailResult.ok && !whatsappResult.success) {
       return fail(c, 'Could not send reset link. Please try again later.', 500);
     }
 
+    // ============================================================
+    // Success response — frontend को बताएँ कौन-कौन से channels use हुए
+    // ============================================================
     return ok(c, {
-      message: `A password reset link has been sent to ${cleanEmail}${user.phone ? ' and your WhatsApp' : ''}. Please check your inbox (and spam folder).`,
+      message: 'Password reset link sent.',
       channels: {
-        email: emailResult.ok,
+        email: emailResult.ok === true,
         whatsapp: whatsappResult.success === true,
       },
     });
@@ -257,10 +318,9 @@ auth.post('/forgot-password', async (c) => {
 });
 
 // POST /api/auth/reset-password/:token
-// Body: { password }
 auth.post('/reset-password/:token', async (c) => {
   try {
-    const token = c.req.param('token')?.trim();   // ✅ trim trailing spaces
+    const token = c.req.param('token')?.trim();
     const body = await c.req.json().catch(() => ({}));
     const { password } = body;
 
