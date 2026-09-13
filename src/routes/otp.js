@@ -224,9 +224,31 @@ otp.post('/verify', async (c) => {
     const cleanEmail = String(email).toLowerCase().trim();
     const cleanOtp = String(otp).trim();
 
+    // ✅ FIX: for phone-based login, /send stores the OTP record under the
+    // user's REAL account email (looked up via their phone number) — not
+    // under the placeholder "<phone>@phone.mypinkshop.com" the frontend
+    // uses as a stand-in "email". Verify must resolve that same real email
+    // first, or the OTP lookup below never matches (always "Invalid OTP",
+    // even with the correct code).
+    const isPhoneLogin = cleanEmail.endsWith('@phone.mypinkshop.com');
+    let lookupEmail = cleanEmail;
+    let userByPhone = null;
+
+    if (isPhoneLogin) {
+      const phoneFromEmail = cleanEmail.split('@')[0];
+      userByPhone = await c.env.DB.prepare(
+        'SELECT id, name, email, role FROM users WHERE phone = ?'
+      ).bind(phoneFromEmail).first();
+
+      if (!userByPhone) {
+        return fail(c, 'No account found with this WhatsApp number. Please create an account first.', 404);
+      }
+      lookupEmail = userByPhone.email.toLowerCase().trim();
+    }
+
     const otpRecord = await c.env.DB.prepare(
       'SELECT * FROM otp_verifications WHERE email = ? AND otp_code = ?'
-    ).bind(cleanEmail, cleanOtp).first();
+    ).bind(lookupEmail, cleanOtp).first();
 
     if (!otpRecord) return fail(c, 'Invalid OTP. Please try again.', 400);
 
@@ -237,9 +259,10 @@ otp.post('/verify', async (c) => {
 
     await c.env.DB.prepare('UPDATE otp_verifications SET is_verified = 1 WHERE id = ?').bind(otpRecord.id).run();
 
-    const existingUser = await c.env.DB.prepare(
+    // Phone-login already resolved the user above; email-login looks it up here.
+    const existingUser = userByPhone || await c.env.DB.prepare(
       'SELECT id, name, role FROM users WHERE email = ?'
-    ).bind(cleanEmail).first();
+    ).bind(lookupEmail).first();
 
     if (!existingUser) {
       return fail(c, 'No account found. Please create an account first.', 404);
@@ -255,7 +278,7 @@ otp.post('/verify', async (c) => {
     }
 
     const token = await signJWT(
-      { id: userId, email: cleanEmail, role: existingUser.role, name: existingUser.name },
+      { id: userId, email: lookupEmail, role: existingUser.role, name: existingUser.name },
       c.env.JWT_SECRET
     );
 
@@ -266,7 +289,7 @@ otp.post('/verify', async (c) => {
       user: {
         _id: userId,
         name: existingUser.name,
-        email: cleanEmail,
+        email: lookupEmail,
         role: existingUser.role,
       },
     });
