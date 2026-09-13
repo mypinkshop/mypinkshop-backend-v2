@@ -14,29 +14,17 @@ function normalizePhone(raw) {
   let digits = String(raw || '').replace(/\D/g, '');
   if (!digits) return '';
 
-  // 10-digit Indian number → prefix 91
   if (digits.length === 10) return '91' + digits;
+  if (digits.length === 11 && digits.startsWith('0')) return '91' + digits.slice(1);
+  if (digits.length === 12 && digits.startsWith('91')) return digits;
 
-  // 11-digit starting with 0 → strip 0, prefix 91
-  if (digits.length === 11 && digits.startsWith('0')) {
-    return '91' + digits.slice(1);
-  }
-
-  // Already has 91 country code
-  if (digits.length === 12 && digits.startsWith('91')) {
-    return digits;
-  }
-
-  // Fallback: last 12 digits (best effort)
   return digits.slice(-12);
 }
 
 function getCreds(env) {
   return {
-    phoneId: env.WHATSAPP_PHONE_ID,       // ✅ Cloudflare नाम
-    token: env.WHATSAPP_TOKEN,            // ✅ Cloudflare नाम
-    templateName: env.WHATSAPP_TEMPLATE_NAME || 'order_confirmation',
-    templateLang: env.WHATSAPP_TEMPLATE_LANG || 'en',
+    phoneId: env.WHATSAPP_PHONE_ID,
+    token: env.WHATSAPP_TOKEN,
   };
 }
 
@@ -53,9 +41,7 @@ export async function sendOrderNotification(env, to, orderNumber, total) {
   }
 
   const cleanPhone = normalizePhone(to);
-  if (!cleanPhone) {
-    return { success: false, error: 'Invalid phone number' };
-  }
+  if (!cleanPhone) return { success: false, error: 'Invalid phone number' };
 
   const payload = {
     messaging_product: 'whatsapp',
@@ -64,7 +50,7 @@ export async function sendOrderNotification(env, to, orderNumber, total) {
     type: 'template',
     template: {
       name: 'order_confirmation',
-      language: { code: 'en' },              // ✅ अगर Meta पर 'en' में approve है
+      language: { code: 'en' },
       components: [
         {
           type: 'body',
@@ -107,10 +93,6 @@ export async function sendOrderNotification(env, to, orderNumber, total) {
 /* Password reset                                                         */
 /* --------------------------------------------------------------------- */
 
-/**
- * Send password reset link via WhatsApp template.
- * Requires template: password_reset (en) with dynamic URL button {{1}}
- */
 export async function sendPasswordResetLink(env, to, name, resetToken) {
   const { phoneId, token } = getCreds(env);
 
@@ -120,9 +102,7 @@ export async function sendPasswordResetLink(env, to, name, resetToken) {
   }
 
   const cleanPhone = normalizePhone(to);
-  if (!cleanPhone) {
-    return { success: false, error: 'Invalid phone number' };
-  }
+  if (!cleanPhone) return { success: false, error: 'Invalid phone number' };
 
   const payload = {
     messaging_product: 'whatsapp',
@@ -131,12 +111,12 @@ export async function sendPasswordResetLink(env, to, name, resetToken) {
     type: 'template',
     template: {
       name: 'password_reset',
-      language: { code: 'en' },                     // ✅ 'en' में approve है
+      language: { code: 'en' },
       components: [
         {
           type: 'body',
           parameters: [
-            { type: 'text', text: name || 'there' },   // Body {{1}}
+            { type: 'text', text: name || 'there' },
           ],
         },
         {
@@ -144,7 +124,7 @@ export async function sendPasswordResetLink(env, to, name, resetToken) {
           sub_type: 'url',
           index: 0,
           parameters: [
-            { type: 'text', text: resetToken },        // Button URL {{1}}
+            { type: 'text', text: resetToken },
           ],
         },
       ],
