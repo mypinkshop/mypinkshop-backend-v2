@@ -11,6 +11,9 @@ const generateOTP = () => {
 };
 
 // ✅ WhatsApp OTP bhejne ka function
+// NOTE: now returns the raw Meta API status + response body on failure
+// (temporarily) so we can see the ACTUAL rejection reason instead of a
+// generic "WhatsApp delivery failed" that hides it.
 const sendWhatsAppOTP = async (c, phone, otpCode) => {
   try {
     const phoneId = c.env.WHATSAPP_PHONE_ID;
@@ -20,7 +23,7 @@ const sendWhatsAppOTP = async (c, phone, otpCode) => {
 
     if (!phoneId || !token || !templateName) {
       console.error('WhatsApp credentials missing');
-      return { ok: false, error: 'WhatsApp service not configured' };
+      return { ok: false, error: 'WhatsApp service not configured', debug: { configured: false } };
     }
 
     const cleanPhone = String(phone).replace(/\D/g, '');
@@ -54,17 +57,28 @@ const sendWhatsAppOTP = async (c, phone, otpCode) => {
       }
     );
 
-    const data = await response.json();
+    const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      console.error('WhatsApp API error:', data);
-      return { ok: false, error: 'WhatsApp delivery failed' };
+      console.error('WhatsApp API error:', JSON.stringify(data));
+      return {
+        ok: false,
+        error: 'WhatsApp delivery failed',
+        debug: {
+          configured: true,
+          metaHttpStatus: response.status,
+          metaResponseBody: data,
+          fullPhoneUsed: fullPhone,
+          templateName,
+          templateLang,
+        },
+      };
     }
 
     return { ok: true, data };
   } catch (err) {
     console.error('WhatsApp exception:', err);
-    return { ok: false, error: 'WhatsApp delivery failed' };
+    return { ok: false, error: 'WhatsApp delivery failed', debug: { configured: true, threw: err.message } };
   }
 };
 
@@ -120,7 +134,8 @@ otp.post('/send', async (c) => {
       const waResult = await sendWhatsAppOTP(c, cleanPhone, otpCode);
 
       if (!waResult.ok) {
-        return fail(c, 'Unable to send OTP on WhatsApp right now. Please try again in a moment.', 500);
+        // ⚠️ TEMPORARY DEBUG INFO — remove once WhatsApp delivery is confirmed working.
+        return fail(c, 'Unable to send OTP on WhatsApp right now. Please try again in a moment.', 500, waResult.debug);
       }
 
       return c.json({
@@ -131,6 +146,17 @@ otp.post('/send', async (c) => {
     }
 
     // ========== EMAIL-BASED LOGIN / SIGNUP ==========
+    // ✅ FIX: otpCode must be generated BEFORE it's used inside emailHtml —
+    // it was previously referenced in the template literal before its own
+    // `const otpCode = ...` declaration below, which throws a
+    // ReferenceError ("Cannot access 'otpCode' before initialization")
+    // the moment anyone tries email-based signup/login.
+    await c.env.DB.prepare('DELETE FROM otp_verifications WHERE email = ?').bind(cleanEmail).run();
+
+    const otpCode = generateOTP();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const id = genId('otp');
+
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <h2 style="color: #ec4899;">MyPinkShop</h2>
@@ -139,12 +165,6 @@ otp.post('/send', async (c) => {
         <p>This OTP is valid for 10 minutes.</p>
       </div>
     `;
-
-    await c.env.DB.prepare('DELETE FROM otp_verifications WHERE email = ?').bind(cleanEmail).run();
-
-    const otpCode = generateOTP();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-    const id = genId('otp');
 
     await c.env.DB.prepare(
       `INSERT INTO otp_verifications (id, email, phone, otp_code, is_verified, created_at, expires_at) VALUES (?, ?, ?, ?, 0, datetime('now'), ?)`
@@ -157,7 +177,11 @@ otp.post('/send', async (c) => {
     if (!emailResult.ok && !waResult.ok) {
       console.error('Email failed:', emailResult.error);
       console.error('WhatsApp failed:', waResult.error);
-      return fail(c, 'Unable to send OTP right now. Please try again in a moment.', 500);
+      // ⚠️ TEMPORARY DEBUG INFO — remove once delivery is confirmed working.
+      return fail(c, 'Unable to send OTP right now. Please try again in a moment.', 500, {
+        emailError: emailResult.error,
+        whatsappDebug: waResult.debug,
+      });
     }
 
     let message = 'OTP sent successfully.';
@@ -276,7 +300,8 @@ otp.post('/resend', async (c) => {
       const waResult = await sendWhatsAppOTP(c, cleanPhone, otpCode);
 
       if (!waResult.ok) {
-        return fail(c, 'Unable to send OTP on WhatsApp right now. Please try again in a moment.', 500);
+        // ⚠️ TEMPORARY DEBUG INFO — remove once WhatsApp delivery is confirmed working.
+        return fail(c, 'Unable to send OTP on WhatsApp right now. Please try again in a moment.', 500, waResult.debug);
       }
 
       return c.json({
@@ -311,7 +336,11 @@ otp.post('/resend', async (c) => {
     if (!emailResult.ok && !waResult.ok) {
       console.error('Email failed:', emailResult.error);
       console.error('WhatsApp failed:', waResult.error);
-      return fail(c, 'Unable to resend OTP right now. Please try again in a moment.', 500);
+      // ⚠️ TEMPORARY DEBUG INFO — remove once delivery is confirmed working.
+      return fail(c, 'Unable to resend OTP right now. Please try again in a moment.', 500, {
+        emailError: emailResult.error,
+        whatsappDebug: waResult.debug,
+      });
     }
 
     let message = 'OTP resent successfully.';
