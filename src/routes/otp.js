@@ -50,6 +50,21 @@ const sendWhatsAppOTP = async (c, phone, otpCode) => {
                 parameters: [
                   { type: 'text', text: otpCode }
                 ]
+              },
+              // ✅ FIX: this template has a dynamic URL button (index 0)
+              // that also needs its own parameter — without this, Meta
+              // rejects the whole send with error 131008 ("Button at
+              // index 0 of type Url requires a parameter"). The value
+              // passed here is what gets appended to the button's base
+              // URL (e.g. https://mypinkshop.com/verify/{{1}}), so the
+              // OTP code is the standard value to send.
+              {
+                type: 'button',
+                sub_type: 'url',
+                index: '0',
+                parameters: [
+                  { type: 'text', text: otpCode }
+                ]
               }
             ]
           }
