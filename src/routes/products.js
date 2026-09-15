@@ -5,7 +5,6 @@ import { ok, fail, genId, parsePagination, safeJsonArray } from '../lib/utils.js
 
 const products = new Hono();
 
-// ✅ Helper: JSON string safely parse karo
 function safeJsonObject(val) {
   if (!val) return {};
   if (typeof val === 'object' && !Array.isArray(val)) return val;
@@ -31,7 +30,6 @@ function serializeProduct(row) {
     aboutThisItem: safeJsonArray(row.about_this_item),
     keyFeatures: safeJsonArray(row.key_features),
     variations: safeJsonArray(row.variations),
-    // ✅ NEW: specifications ko object banake bhejo
     specifications: safeJsonObject(row.specifications),
     shortDescription: row.short_description || '',
     isActive: !!row.is_active,
@@ -56,10 +54,7 @@ function serializeProduct(row) {
       "name": row.name,
       "image": images,
       "description": row.description || `Buy ${row.name} online at best price in India on MyPinkShop. Free Shipping & COD available.`,
-      "brand": {
-        "@type": "Brand",
-        "name": row.brand || "MyPinkShop"
-      },
+      "brand": { "@type": "Brand", "name": row.brand || "MyPinkShop" },
       "sku": row.sku || row.id,
       "offers": {
         "@type": "Offer",
@@ -69,10 +64,7 @@ function serializeProduct(row) {
         "priceValidUntil": "2027-12-31",
         "itemCondition": "https://schema.org/NewCondition",
         "availability": row.stock > 0 ? "https://schema.org/InStock" : "https://schema.org/OutOfStock",
-        "seller": {
-          "@type": "Organization",
-          "name": "MyPinkShop"
-        }
+        "seller": { "@type": "Organization", "name": "MyPinkShop" }
       }
     }
   };
@@ -93,7 +85,6 @@ const toSafeJsonString = (val) => {
   return JSON.stringify(val);
 };
 
-// ✅ NEW: Object ke liye safe JSON stringify
 const toSafeJsonObjectString = (val) => {
   if (!val) return JSON.stringify({});
   if (typeof val === 'string') {
@@ -205,9 +196,9 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       mainCategory = 'Other',
       subCategory = '',
       description = [],
-      shortDescription = '',                    // ✅ NEW
+      shortDescription = '',
       keyFeatures = [],
-      productDetails = {},                       // ✅ NEW
+      productDetails = {},
       price,
       originalPrice = 0,
       discountPercent = 0,
@@ -253,6 +244,35 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       }
     }
 
+    const bindValues = [
+      id, vendorId, vendorName,
+      toSafeString(name), toSafeString(brand),
+      toSafeString(mainCategory), toSafeString(subCategory),
+      toSafeString(slug),
+      toSafeString(Array.isArray(description) ? description.join('\n') : description),
+      toSafeJsonString(description), toSafeJsonString(keyFeatures),
+      toSafeJsonObjectString(productDetails), toSafeString(shortDescription),
+      parseFloat(price) || 0, parseFloat(originalPrice) || 0,
+      parseFloat(discountPercent) || 0, parseFloat(tax) || 18,
+      parseInt(stock, 10) || 10, toSafeString(sku),
+      toSafeString(weight), toSafeString(dimensions),
+      toSafeJsonString(images), toSafeString(skinType),
+      toSafeJsonString(concerns), toSafeString(ingredients),
+      toSafeString(finish), toSafeString(coverage), toSafeString(shade),
+      toSafeString(hairType), toSafeJsonString(hairConcerns),
+      toSafeString(fabric), toSafeString(material), toSafeString(gender),
+      toSafeJsonString(variations), hasVariations ? 1 : 0,
+      toSafeString(metaTitle), toSafeString(metaDescription),
+      toSafeString(metaKeywords), toSafeString(slug || id),
+      isActive ? 1 : 0, isFeatured ? 1 : 0
+    ];
+
+    console.log('🔢 bindValues.length:', bindValues.length);
+
+    if (bindValues.length !== 41) {
+      return fail(c, `Internal error: expected 41 bind values, got ${bindValues.length}`, 500);
+    }
+
     await c.env.DB.prepare(
       `INSERT INTO products
         (id, vendor_id, vendor_name, name, brand, main_category, sub_category, category_slug,
@@ -260,62 +280,26 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
          price, original_price, discount_percent, tax, stock, sku,
          weight, dimensions, images, skin_type, concerns, ingredients, finish, coverage, shade,
          hair_type, hair_concerns, fabric, material, gender, variations, has_variations,
-         meta_title, meta_description, meta_keywords, slug, rating, review_count, is_active, is_featured, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 4.8, 0, ?, ?, datetime('now'), datetime('now'))`
+         meta_title, meta_description, meta_keywords, slug,
+         rating, review_count, is_active, is_featured, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               4.8, 0, ?, ?,
+               datetime('now'), datetime('now'))`
     )
-      .bind(
-        id,
-        vendorId,
-        vendorName,
-        toSafeString(name),
-        toSafeString(brand),
-        toSafeString(mainCategory),
-        toSafeString(subCategory),
-        toSafeString(slug),
-        toSafeString(Array.isArray(description) ? description.join('\n') : description),
-        toSafeJsonString(description),
-        toSafeJsonString(keyFeatures),
-        toSafeJsonObjectString(productDetails),    // ✅ NEW: specifications
-        toSafeString(shortDescription),             // ✅ NEW: short_description
-        parseFloat(price) || 0,
-        parseFloat(originalPrice) || 0,
-        parseFloat(discountPercent) || 0,
-        parseFloat(tax) || 18,
-        parseInt(stock, 10) || 10,
-        toSafeString(sku),
-        toSafeString(weight),
-        toSafeString(dimensions),
-        toSafeJsonString(images),
-        toSafeString(skinType),
-        toSafeJsonString(concerns),
-        toSafeString(ingredients),
-        toSafeString(finish),
-        toSafeString(coverage),
-        toSafeString(shade),
-        toSafeString(hairType),
-        toSafeJsonString(hairConcerns),
-        toSafeString(fabric),
-        toSafeString(material),
-        toSafeString(gender),
-        toSafeJsonString(variations),
-        hasVariations ? 1 : 0,
-        toSafeString(metaTitle),
-        toSafeString(metaDescription),
-        toSafeString(metaKeywords),
-        toSafeString(slug || id),
-        isActive ? 1 : 0,
-        isFeatured ? 1 : 0
-      )
+      .bind(...bindValues)
       .run();
 
     const created = await c.env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(id).first();
     return ok(c, serializeProduct(created), undefined, 201);
   } catch (err) {
+    console.error('❌ Create product error:', err);
     return fail(c, `Failed to create product: ${err.message}`, 500);
   }
 });
 
-// PUT /api/products/:id — edit an existing product (used by AdminEditProduct.jsx)
 products.put('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
@@ -329,24 +313,15 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
       brand: body.brand ?? existing.brand,
       main_category: body.mainCategory ?? existing.main_category,
       sub_category: body.subCategory ?? existing.sub_category,
-      description:
-        body.description !== undefined
-          ? toSafeString(Array.isArray(body.description) ? body.description.join('\n') : body.description)
-          : existing.description,
+      description: body.description !== undefined
+        ? toSafeString(Array.isArray(body.description) ? body.description.join('\n') : body.description)
+        : existing.description,
       about_this_item: body.description !== undefined ? toSafeJsonString(body.description) : existing.about_this_item,
       key_features: body.keyFeatures !== undefined ? toSafeJsonString(body.keyFeatures) : existing.key_features,
-      // ✅ NEW: specifications handle karo (object)
-      specifications:
-        body.productDetails !== undefined
-          ? toSafeJsonObjectString(body.productDetails)
-          : (body.specifications !== undefined
-              ? toSafeJsonObjectString(body.specifications)
-              : existing.specifications),
-      // ✅ NEW: short_description handle karo
-      short_description:
-        body.shortDescription !== undefined
-          ? toSafeString(body.shortDescription)
-          : existing.short_description,
+      specifications: body.productDetails !== undefined
+        ? toSafeJsonObjectString(body.productDetails)
+        : (body.specifications !== undefined ? toSafeJsonObjectString(body.specifications) : existing.specifications),
+      short_description: body.shortDescription !== undefined ? toSafeString(body.shortDescription) : existing.short_description,
       price: body.price !== undefined ? parseFloat(body.price) || 0 : existing.price,
       original_price: body.originalPrice !== undefined ? parseFloat(body.originalPrice) || 0 : existing.original_price,
       discount_percent: body.discountPercent !== undefined ? parseFloat(body.discountPercent) || 0 : existing.discount_percent,
@@ -368,8 +343,7 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
       material: body.material !== undefined ? toSafeString(body.material) : existing.material,
       gender: body.gender !== undefined ? toSafeString(body.gender) : existing.gender,
       variations: body.variations !== undefined ? toSafeJsonString(body.variations) : existing.variations,
-      has_variations:
-        body.hasVariations !== undefined ? (body.hasVariations ? 1 : 0) : existing.has_variations,
+      has_variations: body.hasVariations !== undefined ? (body.hasVariations ? 1 : 0) : existing.has_variations,
       meta_title: body.metaTitle !== undefined ? toSafeString(body.metaTitle) : existing.meta_title,
       meta_description: body.metaDescription !== undefined ? toSafeString(body.metaDescription) : existing.meta_description,
       meta_keywords: body.metaKeywords !== undefined ? toSafeString(body.metaKeywords) : existing.meta_keywords,
@@ -393,43 +367,16 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
        WHERE id = ?`
     )
       .bind(
-        merged.name,
-        merged.brand,
-        merged.main_category,
-        merged.sub_category,
-        merged.description,
-        merged.about_this_item,
-        merged.key_features,
-        merged.specifications,        // ✅ NEW
-        merged.short_description,     // ✅ NEW
-        merged.price,
-        merged.original_price,
-        merged.discount_percent,
-        merged.tax,
-        merged.stock,
-        merged.sku,
-        merged.weight,
-        merged.dimensions,
-        merged.images,
-        merged.skin_type,
-        merged.concerns,
-        merged.ingredients,
-        merged.finish,
-        merged.coverage,
-        merged.shade,
-        merged.hair_type,
-        merged.hair_concerns,
-        merged.fabric,
-        merged.material,
-        merged.gender,
-        merged.variations,
-        merged.has_variations,
-        merged.meta_title,
-        merged.meta_description,
-        merged.meta_keywords,
-        merged.slug,
-        merged.is_active,
-        merged.is_featured,
+        merged.name, merged.brand, merged.main_category, merged.sub_category,
+        merged.description, merged.about_this_item, merged.key_features,
+        merged.specifications, merged.short_description,
+        merged.price, merged.original_price, merged.discount_percent, merged.tax, merged.stock, merged.sku,
+        merged.weight, merged.dimensions, merged.images,
+        merged.skin_type, merged.concerns, merged.ingredients, merged.finish, merged.coverage, merged.shade,
+        merged.hair_type, merged.hair_concerns, merged.fabric, merged.material, merged.gender,
+        merged.variations, merged.has_variations,
+        merged.meta_title, merged.meta_description, merged.meta_keywords, merged.slug,
+        merged.is_active, merged.is_featured,
         id
       )
       .run();
