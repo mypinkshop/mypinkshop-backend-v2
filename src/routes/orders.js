@@ -139,7 +139,6 @@ orders.post('/', authMiddleware, async (c) => {
       const itemSubtotal = (item.price || 0) * (item.quantity || 1);
       const productId = item.productId || item.id;
 
-      // Fetch brand from products table automatically
       let itemBrand = 'Richfem';
       try {
         const prod = await c.env.DB.prepare('SELECT brand FROM products WHERE id = ?').bind(productId).first();
@@ -305,7 +304,7 @@ orders.get('/user', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
     const { results } = await c.env.DB.prepare(
-      'SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC'
+      'SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 100'
     ).bind(user.id).all();
 
     const userOrders = results || [];
@@ -387,12 +386,21 @@ orders.patch('/:id/cancel', authMiddleware, cancelOrderHandler);
 /* Admin                                                                 */
 /* --------------------------------------------------------------------- */
 
-// GET /api/orders/all - Safely joins with products table and ensures brand presence
+// ✅ GET /api/orders/all - FIXED with pagination + specific columns
 orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   try {
+    const url = new URL(c.req.url);
+    const limit = Math.min(parseInt(url.searchParams.get('limit')) || 100, 500);
+    const offset = parseInt(url.searchParams.get('offset')) || 0;
+
     const { results: ordersList } = await c.env.DB.prepare(
-      'SELECT * FROM orders ORDER BY created_at DESC'
-    ).all();
+      `SELECT id, user_id, order_number, status, subtotal, tax_amount, shipping_amount,
+              discount_amount, total_amount, payment_status, payment_method,
+              shipping_address, created_at, updated_at
+       FROM orders
+       ORDER BY created_at DESC
+       LIMIT ? OFFSET ?`
+    ).bind(limit, offset).all();
 
     if (ordersList && ordersList.length > 0) {
       const orderIds = ordersList.map(o => o.id);
@@ -416,6 +424,7 @@ orders.get('/all', authMiddleware, requireAdmin, async (c) => {
 
     return ok(c, ordersList || []);
   } catch (err) {
+    console.error('❌ Load all orders error:', err);
     return fail(c, `Failed to load all orders: ${err.message}`, 500);
   }
 });
