@@ -5,6 +5,21 @@ import { ok, fail, genId, parsePagination, safeJsonArray } from '../lib/utils.js
 
 const products = new Hono();
 
+// ✅ Helper: JSON string safely parse karo
+function safeJsonObject(val) {
+  if (!val) return {};
+  if (typeof val === 'object' && !Array.isArray(val)) return val;
+  if (typeof val === 'string') {
+    try {
+      const parsed = JSON.parse(val);
+      return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
 function serializeProduct(row) {
   if (!row) return null;
   const images = safeJsonArray(row.images);
@@ -16,6 +31,9 @@ function serializeProduct(row) {
     aboutThisItem: safeJsonArray(row.about_this_item),
     keyFeatures: safeJsonArray(row.key_features),
     variations: safeJsonArray(row.variations),
+    // ✅ NEW: specifications ko object banake bhejo
+    specifications: safeJsonObject(row.specifications),
+    shortDescription: row.short_description || '',
     isActive: !!row.is_active,
     isFeatured: !!row.is_featured,
     hasVariations: !!row.has_variations,
@@ -73,6 +91,24 @@ const toSafeJsonString = (val) => {
     try { JSON.parse(val); return val; } catch { return JSON.stringify([val]); }
   }
   return JSON.stringify(val);
+};
+
+// ✅ NEW: Object ke liye safe JSON stringify
+const toSafeJsonObjectString = (val) => {
+  if (!val) return JSON.stringify({});
+  if (typeof val === 'string') {
+    try {
+      const parsed = JSON.parse(val);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return val;
+      return JSON.stringify({});
+    } catch {
+      return JSON.stringify({});
+    }
+  }
+  if (typeof val === 'object' && !Array.isArray(val)) {
+    return JSON.stringify(val);
+  }
+  return JSON.stringify({});
 };
 
 products.get('/', async (c) => {
@@ -169,7 +205,9 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       mainCategory = 'Other',
       subCategory = '',
       description = [],
+      shortDescription = '',                    // ✅ NEW
       keyFeatures = [],
+      productDetails = {},                       // ✅ NEW
       price,
       originalPrice = 0,
       discountPercent = 0,
@@ -208,9 +246,6 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
 
     const id = frontendId || genId('prod');
 
-    // Frontend pre-generates a client-side id (and uses it as the slug) so
-    // the SEO URL it previews to the admin matches the real saved product.
-    // If that id is already taken, don't silently overwrite — fail clearly.
     if (frontendId) {
       const existing = await c.env.DB.prepare('SELECT id FROM products WHERE id = ?').bind(id).first();
       if (existing) {
@@ -221,11 +256,12 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
     await c.env.DB.prepare(
       `INSERT INTO products
         (id, vendor_id, vendor_name, name, brand, main_category, sub_category, category_slug,
-         description, about_this_item, key_features, price, original_price, discount_percent, tax, stock, sku,
+         description, about_this_item, key_features, specifications, short_description,
+         price, original_price, discount_percent, tax, stock, sku,
          weight, dimensions, images, skin_type, concerns, ingredients, finish, coverage, shade,
          hair_type, hair_concerns, fabric, material, gender, variations, has_variations,
          meta_title, meta_description, meta_keywords, slug, rating, review_count, is_active, is_featured, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 4.8, 0, ?, ?, datetime('now'), datetime('now'))`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 4.8, 0, ?, ?, datetime('now'), datetime('now'))`
     )
       .bind(
         id,
@@ -239,6 +275,8 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
         toSafeString(Array.isArray(description) ? description.join('\n') : description),
         toSafeJsonString(description),
         toSafeJsonString(keyFeatures),
+        toSafeJsonObjectString(productDetails),    // ✅ NEW: specifications
+        toSafeString(shortDescription),             // ✅ NEW: short_description
         parseFloat(price) || 0,
         parseFloat(originalPrice) || 0,
         parseFloat(discountPercent) || 0,
@@ -297,6 +335,18 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
           : existing.description,
       about_this_item: body.description !== undefined ? toSafeJsonString(body.description) : existing.about_this_item,
       key_features: body.keyFeatures !== undefined ? toSafeJsonString(body.keyFeatures) : existing.key_features,
+      // ✅ NEW: specifications handle karo (object)
+      specifications:
+        body.productDetails !== undefined
+          ? toSafeJsonObjectString(body.productDetails)
+          : (body.specifications !== undefined
+              ? toSafeJsonObjectString(body.specifications)
+              : existing.specifications),
+      // ✅ NEW: short_description handle karo
+      short_description:
+        body.shortDescription !== undefined
+          ? toSafeString(body.shortDescription)
+          : existing.short_description,
       price: body.price !== undefined ? parseFloat(body.price) || 0 : existing.price,
       original_price: body.originalPrice !== undefined ? parseFloat(body.originalPrice) || 0 : existing.original_price,
       discount_percent: body.discountPercent !== undefined ? parseFloat(body.discountPercent) || 0 : existing.discount_percent,
@@ -332,6 +382,7 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
       `UPDATE products SET
         name = ?, brand = ?, main_category = ?, sub_category = ?,
         description = ?, about_this_item = ?, key_features = ?,
+        specifications = ?, short_description = ?,
         price = ?, original_price = ?, discount_percent = ?, tax = ?, stock = ?, sku = ?,
         weight = ?, dimensions = ?, images = ?,
         skin_type = ?, concerns = ?, ingredients = ?, finish = ?, coverage = ?, shade = ?,
@@ -349,6 +400,8 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
         merged.description,
         merged.about_this_item,
         merged.key_features,
+        merged.specifications,        // ✅ NEW
+        merged.short_description,     // ✅ NEW
         merged.price,
         merged.original_price,
         merged.discount_percent,
