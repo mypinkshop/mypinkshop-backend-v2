@@ -18,12 +18,20 @@ function serializeProduct(row) {
     variations: safeJsonArray(row.variations),
     isActive: !!row.is_active,
     isFeatured: !!row.is_featured,
+    hasVariations: !!row.has_variations,
     status: row.is_active ? 'active' : 'inactive',
     is_active: row.is_active,
     category: row.main_category,
     mainCategory: row.main_category,
     subcategory: row.sub_category,
     subCategory: row.sub_category,
+    metaTitle: row.meta_title,
+    metaDescription: row.meta_description,
+    metaKeywords: row.meta_keywords,
+    slug: row.slug,
+    skinType: row.skin_type,
+    hairType: row.hair_type,
+    hairConcerns: row.hair_concerns,
     seoMeta: {
       "@context": "https://schema.org/",
       "@type": "Product",
@@ -51,6 +59,21 @@ function serializeProduct(row) {
     }
   };
 }
+
+const toSafeString = (val) => {
+  if (val === null || val === undefined) return '';
+  if (Array.isArray(val)) return val.join(', ');
+  if (typeof val === 'object') return JSON.stringify(val);
+  return String(val);
+};
+
+const toSafeJsonString = (val) => {
+  if (!val) return JSON.stringify([]);
+  if (typeof val === 'string') {
+    try { JSON.parse(val); return val; } catch { return JSON.stringify([val]); }
+  }
+  return JSON.stringify(val);
+};
 
 products.get('/', async (c) => {
   try {
@@ -185,20 +208,15 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
 
     const id = frontendId || genId('prod');
 
-    const toSafeString = (val) => {
-      if (val === null || val === undefined) return '';
-      if (Array.isArray(val)) return val.join(', ');
-      if (typeof val === 'object') return JSON.stringify(val);
-      return String(val);
-    };
-
-    const toSafeJsonString = (val) => {
-      if (!val) return JSON.stringify([]);
-      if (typeof val === 'string') {
-        try { JSON.parse(val); return val; } catch { return JSON.stringify([val]); }
+    // Frontend pre-generates a client-side id (and uses it as the slug) so
+    // the SEO URL it previews to the admin matches the real saved product.
+    // If that id is already taken, don't silently overwrite — fail clearly.
+    if (frontendId) {
+      const existing = await c.env.DB.prepare('SELECT id FROM products WHERE id = ?').bind(id).first();
+      if (existing) {
+        return fail(c, `A product with id "${id}" already exists.`, 409);
       }
-      return JSON.stringify(val);
-    };
+    }
 
     await c.env.DB.prepare(
       `INSERT INTO products
@@ -231,13 +249,13 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
         toSafeString(dimensions),
         toSafeJsonString(images),
         toSafeString(skinType),
-        toSafeString(concerns),
+        toSafeJsonString(concerns),
         toSafeString(ingredients),
         toSafeString(finish),
         toSafeString(coverage),
         toSafeString(shade),
         toSafeString(hairType),
-        toSafeString(hairConcerns),
+        toSafeJsonString(hairConcerns),
         toSafeString(fabric),
         toSafeString(material),
         toSafeString(gender),
@@ -246,7 +264,7 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
         toSafeString(metaTitle),
         toSafeString(metaDescription),
         toSafeString(metaKeywords),
-        toSafeString(slug),
+        toSafeString(slug || id),
         isActive ? 1 : 0,
         isFeatured ? 1 : 0
       )
@@ -256,6 +274,117 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
     return ok(c, serializeProduct(created), undefined, 201);
   } catch (err) {
     return fail(c, `Failed to create product: ${err.message}`, 500);
+  }
+});
+
+// PUT /api/products/:id — edit an existing product (used by AdminEditProduct.jsx)
+products.put('/:id', authMiddleware, requireAdmin, async (c) => {
+  try {
+    const id = c.req.param('id');
+    const existing = await c.env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(id).first();
+    if (!existing) return fail(c, 'Product not found.', 404);
+
+    const body = await c.req.json().catch(() => ({}));
+
+    const merged = {
+      name: body.name ?? existing.name,
+      brand: body.brand ?? existing.brand,
+      main_category: body.mainCategory ?? existing.main_category,
+      sub_category: body.subCategory ?? existing.sub_category,
+      description:
+        body.description !== undefined
+          ? toSafeString(Array.isArray(body.description) ? body.description.join('\n') : body.description)
+          : existing.description,
+      about_this_item: body.description !== undefined ? toSafeJsonString(body.description) : existing.about_this_item,
+      key_features: body.keyFeatures !== undefined ? toSafeJsonString(body.keyFeatures) : existing.key_features,
+      price: body.price !== undefined ? parseFloat(body.price) || 0 : existing.price,
+      original_price: body.originalPrice !== undefined ? parseFloat(body.originalPrice) || 0 : existing.original_price,
+      discount_percent: body.discountPercent !== undefined ? parseFloat(body.discountPercent) || 0 : existing.discount_percent,
+      tax: body.tax !== undefined ? parseFloat(body.tax) || 18 : existing.tax,
+      stock: body.stock !== undefined ? parseInt(body.stock, 10) || 0 : existing.stock,
+      sku: body.sku !== undefined ? toSafeString(body.sku) : existing.sku,
+      weight: body.weight !== undefined ? toSafeString(body.weight) : existing.weight,
+      dimensions: body.dimensions !== undefined ? toSafeString(body.dimensions) : existing.dimensions,
+      images: body.images !== undefined ? toSafeJsonString(body.images) : existing.images,
+      skin_type: body.skinType !== undefined ? toSafeString(body.skinType) : existing.skin_type,
+      concerns: body.concerns !== undefined ? toSafeJsonString(body.concerns) : existing.concerns,
+      ingredients: body.ingredients !== undefined ? toSafeString(body.ingredients) : existing.ingredients,
+      finish: body.finish !== undefined ? toSafeString(body.finish) : existing.finish,
+      coverage: body.coverage !== undefined ? toSafeString(body.coverage) : existing.coverage,
+      shade: body.shade !== undefined ? toSafeString(body.shade) : existing.shade,
+      hair_type: body.hairType !== undefined ? toSafeString(body.hairType) : existing.hair_type,
+      hair_concerns: body.hairConcerns !== undefined ? toSafeJsonString(body.hairConcerns) : existing.hair_concerns,
+      fabric: body.fabric !== undefined ? toSafeString(body.fabric) : existing.fabric,
+      material: body.material !== undefined ? toSafeString(body.material) : existing.material,
+      gender: body.gender !== undefined ? toSafeString(body.gender) : existing.gender,
+      variations: body.variations !== undefined ? toSafeJsonString(body.variations) : existing.variations,
+      has_variations:
+        body.hasVariations !== undefined ? (body.hasVariations ? 1 : 0) : existing.has_variations,
+      meta_title: body.metaTitle !== undefined ? toSafeString(body.metaTitle) : existing.meta_title,
+      meta_description: body.metaDescription !== undefined ? toSafeString(body.metaDescription) : existing.meta_description,
+      meta_keywords: body.metaKeywords !== undefined ? toSafeString(body.metaKeywords) : existing.meta_keywords,
+      slug: body.slug !== undefined ? toSafeString(body.slug) : existing.slug,
+      is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : existing.is_active,
+      is_featured: body.isFeatured !== undefined ? (body.isFeatured ? 1 : 0) : existing.is_featured,
+    };
+
+    await c.env.DB.prepare(
+      `UPDATE products SET
+        name = ?, brand = ?, main_category = ?, sub_category = ?,
+        description = ?, about_this_item = ?, key_features = ?,
+        price = ?, original_price = ?, discount_percent = ?, tax = ?, stock = ?, sku = ?,
+        weight = ?, dimensions = ?, images = ?,
+        skin_type = ?, concerns = ?, ingredients = ?, finish = ?, coverage = ?, shade = ?,
+        hair_type = ?, hair_concerns = ?, fabric = ?, material = ?, gender = ?,
+        variations = ?, has_variations = ?,
+        meta_title = ?, meta_description = ?, meta_keywords = ?, slug = ?,
+        is_active = ?, is_featured = ?, updated_at = datetime('now')
+       WHERE id = ?`
+    )
+      .bind(
+        merged.name,
+        merged.brand,
+        merged.main_category,
+        merged.sub_category,
+        merged.description,
+        merged.about_this_item,
+        merged.key_features,
+        merged.price,
+        merged.original_price,
+        merged.discount_percent,
+        merged.tax,
+        merged.stock,
+        merged.sku,
+        merged.weight,
+        merged.dimensions,
+        merged.images,
+        merged.skin_type,
+        merged.concerns,
+        merged.ingredients,
+        merged.finish,
+        merged.coverage,
+        merged.shade,
+        merged.hair_type,
+        merged.hair_concerns,
+        merged.fabric,
+        merged.material,
+        merged.gender,
+        merged.variations,
+        merged.has_variations,
+        merged.meta_title,
+        merged.meta_description,
+        merged.meta_keywords,
+        merged.slug,
+        merged.is_active,
+        merged.is_featured,
+        id
+      )
+      .run();
+
+    const updated = await c.env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(id).first();
+    return ok(c, serializeProduct(updated));
+  } catch (err) {
+    return fail(c, `Failed to update product: ${err.message}`, 500);
   }
 });
 
