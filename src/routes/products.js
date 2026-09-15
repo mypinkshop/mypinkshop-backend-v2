@@ -35,6 +35,7 @@ function serializeProduct(row) {
     isActive: !!row.is_active,
     isFeatured: !!row.is_featured,
     hasVariations: !!row.has_variations,
+    adminApproved: row.admin_approved === 1 || row.admin_approved === true,   // ✅ NEW
     status: row.is_active ? 'active' : 'inactive',
     is_active: row.is_active,
     category: row.main_category,
@@ -227,6 +228,7 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       slug = '',
       isActive = true,
       isFeatured = false,
+      adminApproved = true,          // ✅ NEW
       vendorId = 'admin',
       vendorName = 'MyPinkShop',
     } = body;
@@ -244,6 +246,7 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       }
     }
 
+    // ✅ Ab 42 bind values hain (adminApproved add hua)
     const bindValues = [
       id, vendorId, vendorName,
       toSafeString(name), toSafeString(brand),
@@ -264,11 +267,12 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       toSafeJsonString(variations), hasVariations ? 1 : 0,
       toSafeString(metaTitle), toSafeString(metaDescription),
       toSafeString(metaKeywords), toSafeString(slug || id),
-      isActive ? 1 : 0, isFeatured ? 1 : 0
+      isActive ? 1 : 0, isFeatured ? 1 : 0,
+      adminApproved ? 1 : 0          // ✅ NEW
     ];
 
-    if (bindValues.length !== 41) {
-      return fail(c, `Internal error: expected 41 bind values, got ${bindValues.length}`, 500);
+    if (bindValues.length !== 42) {
+      return fail(c, `Internal error: expected 42 bind values, got ${bindValues.length}`, 500);
     }
 
     await c.env.DB.prepare(
@@ -279,12 +283,12 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
          weight, dimensions, images, skin_type, concerns, ingredients, finish, coverage, shade,
          hair_type, hair_concerns, fabric, material, gender, variations, has_variations,
          meta_title, meta_description, meta_keywords, slug,
-         rating, review_count, is_active, is_featured, created_at, updated_at)
+         rating, review_count, is_active, is_featured, admin_approved, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                ?, ?, ?, ?, ?, ?, ?, ?, ?,
-               4.8, 0, ?, ?,
+               4.8, 0, ?, ?, ?,
                datetime('now'), datetime('now'))`
     )
       .bind(...bindValues)
@@ -348,6 +352,7 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
       slug: body.slug !== undefined ? toSafeString(body.slug) : existing.slug,
       is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : existing.is_active,
       is_featured: body.isFeatured !== undefined ? (body.isFeatured ? 1 : 0) : existing.is_featured,
+      admin_approved: body.adminApproved !== undefined ? (body.adminApproved ? 1 : 0) : existing.admin_approved,   // ✅ NEW
     };
 
     await c.env.DB.prepare(
@@ -361,7 +366,7 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
         hair_type = ?, hair_concerns = ?, fabric = ?, material = ?, gender = ?,
         variations = ?, has_variations = ?,
         meta_title = ?, meta_description = ?, meta_keywords = ?, slug = ?,
-        is_active = ?, is_featured = ?, updated_at = datetime('now')
+        is_active = ?, is_featured = ?, admin_approved = ?, updated_at = datetime('now')
        WHERE id = ?`
     )
       .bind(
@@ -374,7 +379,7 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
         merged.hair_type, merged.hair_concerns, merged.fabric, merged.material, merged.gender,
         merged.variations, merged.has_variations,
         merged.meta_title, merged.meta_description, merged.meta_keywords, merged.slug,
-        merged.is_active, merged.is_featured,
+        merged.is_active, merged.is_featured, merged.admin_approved,
         id
       )
       .run();
@@ -386,21 +391,17 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// ✅ FIXED: Delete handler with foreign key cleanup
 products.delete('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
     const existing = await c.env.DB.prepare('SELECT id FROM products WHERE id = ?').bind(id).first();
     if (!existing) return fail(c, 'Product not found.', 404);
 
-    // ✅ Pehle related rows delete karo (jo tables exist karti hain)
-    // Har ek ko try/catch mein rakha hai taaki agar table exist na kare to error na aaye
-    try { await c.env.DB.prepare('DELETE FROM cart WHERE product_id = ?').bind(id).run(); } catch (e) { /* table may not exist */ }
-    try { await c.env.DB.prepare('DELETE FROM wishlist WHERE product_id = ?').bind(id).run(); } catch (e) { /* table may not exist */ }
-    try { await c.env.DB.prepare('DELETE FROM order_items WHERE product_id = ?').bind(id).run(); } catch (e) { /* table may not exist */ }
-    try { await c.env.DB.prepare('DELETE FROM reviews WHERE product_id = ?').bind(id).run(); } catch (e) { /* table may not exist */ }
+    try { await c.env.DB.prepare('DELETE FROM cart WHERE product_id = ?').bind(id).run(); } catch (e) {}
+    try { await c.env.DB.prepare('DELETE FROM wishlist WHERE product_id = ?').bind(id).run(); } catch (e) {}
+    try { await c.env.DB.prepare('DELETE FROM order_items WHERE product_id = ?').bind(id).run(); } catch (e) {}
+    try { await c.env.DB.prepare('DELETE FROM reviews WHERE product_id = ?').bind(id).run(); } catch (e) {}
 
-    // ✅ Ab product delete karo
     await c.env.DB.prepare('DELETE FROM products WHERE id = ?').bind(id).run();
     return ok(c, { id, deleted: true });
   } catch (err) {
