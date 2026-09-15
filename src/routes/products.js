@@ -267,8 +267,6 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       isActive ? 1 : 0, isFeatured ? 1 : 0
     ];
 
-    console.log('🔢 bindValues.length:', bindValues.length);
-
     if (bindValues.length !== 41) {
       return fail(c, `Internal error: expected 41 bind values, got ${bindValues.length}`, 500);
     }
@@ -388,13 +386,25 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
+// ✅ FIXED: Delete handler with foreign key cleanup
 products.delete('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
-    const result = await c.env.DB.prepare('DELETE FROM products WHERE id = ?').bind(id).run();
-    if (result.meta?.changes === 0) return fail(c, 'Product not found.', 404);
+    const existing = await c.env.DB.prepare('SELECT id FROM products WHERE id = ?').bind(id).first();
+    if (!existing) return fail(c, 'Product not found.', 404);
+
+    // ✅ Pehle related rows delete karo (jo tables exist karti hain)
+    // Har ek ko try/catch mein rakha hai taaki agar table exist na kare to error na aaye
+    try { await c.env.DB.prepare('DELETE FROM cart WHERE product_id = ?').bind(id).run(); } catch (e) { /* table may not exist */ }
+    try { await c.env.DB.prepare('DELETE FROM wishlist WHERE product_id = ?').bind(id).run(); } catch (e) { /* table may not exist */ }
+    try { await c.env.DB.prepare('DELETE FROM order_items WHERE product_id = ?').bind(id).run(); } catch (e) { /* table may not exist */ }
+    try { await c.env.DB.prepare('DELETE FROM reviews WHERE product_id = ?').bind(id).run(); } catch (e) { /* table may not exist */ }
+
+    // ✅ Ab product delete karo
+    await c.env.DB.prepare('DELETE FROM products WHERE id = ?').bind(id).run();
     return ok(c, { id, deleted: true });
   } catch (err) {
+    console.error('❌ Delete product error:', err);
     return fail(c, `Failed to delete product: ${err.message}`, 500);
   }
 });
