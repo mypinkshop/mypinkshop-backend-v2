@@ -35,7 +35,7 @@ function serializeProduct(row) {
     isActive: !!row.is_active,
     isFeatured: !!row.is_featured,
     hasVariations: !!row.has_variations,
-    adminApproved: row.admin_approved === 1 || row.admin_approved === true,   // ✅ NEW
+    adminApproved: row.admin_approved === 1 || row.admin_approved === true,
     status: row.is_active ? 'active' : 'inactive',
     is_active: row.is_active,
     category: row.main_category,
@@ -103,6 +103,59 @@ const toSafeJsonObjectString = (val) => {
   return JSON.stringify({});
 };
 
+// ============================================================
+// ✅ NEW: Auto-create category & subcategory in D1
+// ============================================================
+const makeSlug = (s) => String(s || '')
+  .toLowerCase()
+  .trim()
+  .replace(/&/g, 'and')
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-|-$/g, '');
+
+async function ensureCategory(db, name, type = 'main', parentId = null) {
+  if (!name || !String(name).trim()) return null;
+  const cleanName = String(name).trim();
+
+  try {
+    if (type === 'main') {
+      const existing = await db.prepare(
+        'SELECT id FROM categories WHERE LOWER(name) = LOWER(?)'
+      ).bind(cleanName).first();
+      if (existing) return existing.id;
+
+      const id = 'cat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      await db.prepare(
+        `INSERT INTO categories (id, name, slug, icon, status, "order", type)
+         VALUES (?, ?, ?, '📁', 'active', 999, 'main')`
+      ).bind(id, cleanName, makeSlug(cleanName)).run();
+      return id;
+    }
+
+    if (type === 'sub' && parentId) {
+      const existing = await db.prepare(
+        'SELECT id FROM categories WHERE LOWER(name) = LOWER(?) AND parent_id = ?'
+      ).bind(cleanName, parentId).first();
+      if (existing) return existing.id;
+
+      const id = 'cat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      await db.prepare(
+        `INSERT INTO categories (id, name, slug, icon, status, "order", type, parent_id)
+         VALUES (?, ?, ?, '📁', 'active', 999, 'sub', ?)`
+      ).bind(id, cleanName, makeSlug(cleanName), parentId).run();
+      return id;
+    }
+
+    return null;
+  } catch (err) {
+    console.warn('ensureCategory failed:', err.message);
+    return null;
+  }
+}
+
+// ============================================================
+// ✅ GET /api/products
+// ============================================================
 products.get('/', async (c) => {
   try {
     const url = new URL(c.req.url);
@@ -176,6 +229,9 @@ products.get('/', async (c) => {
   }
 });
 
+// ============================================================
+// ✅ GET /api/products/:id
+// ============================================================
 products.get('/:id', async (c) => {
   try {
     const id = c.req.param('id');
@@ -187,6 +243,10 @@ products.get('/:id', async (c) => {
   }
 });
 
+// ============================================================
+// ✅ POST /api/products/create
+// ✅ AUTO-CREATES categories in D1
+// ============================================================
 products.post('/create', authMiddleware, requireAdmin, async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
@@ -228,7 +288,7 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       slug = '',
       isActive = true,
       isFeatured = false,
-      adminApproved = true,          // ✅ NEW
+      adminApproved = true,
       vendorId = 'admin',
       vendorName = 'MyPinkShop',
     } = body;
@@ -246,7 +306,15 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       }
     }
 
-    // ✅ Ab 42 bind values hain (adminApproved add hua)
+    // ✅ AUTO-CREATE CATEGORIES (non-blocking)
+    let mainCatId = null;
+    if (mainCategory && mainCategory.trim()) {
+      mainCatId = await ensureCategory(c.env.DB, mainCategory, 'main');
+      if (mainCatId && subCategory && subCategory.trim()) {
+        await ensureCategory(c.env.DB, subCategory, 'sub', mainCatId);
+      }
+    }
+
     const bindValues = [
       id, vendorId, vendorName,
       toSafeString(name), toSafeString(brand),
@@ -268,7 +336,7 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       toSafeString(metaTitle), toSafeString(metaDescription),
       toSafeString(metaKeywords), toSafeString(slug || id),
       isActive ? 1 : 0, isFeatured ? 1 : 0,
-      adminApproved ? 1 : 0          // ✅ NEW
+      adminApproved ? 1 : 0
     ];
 
     if (bindValues.length !== 42) {
@@ -302,6 +370,10 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
+// ============================================================
+// ✅ PUT /api/products/:id
+// ✅ AUTO-CREATES categories in D1
+// ============================================================
 products.put('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
@@ -352,8 +424,17 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
       slug: body.slug !== undefined ? toSafeString(body.slug) : existing.slug,
       is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : existing.is_active,
       is_featured: body.isFeatured !== undefined ? (body.isFeatured ? 1 : 0) : existing.is_featured,
-      admin_approved: body.adminApproved !== undefined ? (body.adminApproved ? 1 : 0) : existing.admin_approved,   // ✅ NEW
+      admin_approved: body.adminApproved !== undefined ? (body.adminApproved ? 1 : 0) : existing.admin_approved,
     };
+
+    // ✅ AUTO-CREATE CATEGORIES (non-blocking)
+    let mainCatId = null;
+    if (merged.main_category && merged.main_category.trim()) {
+      mainCatId = await ensureCategory(c.env.DB, merged.main_category, 'main');
+      if (mainCatId && merged.sub_category && merged.sub_category.trim()) {
+        await ensureCategory(c.env.DB, merged.sub_category, 'sub', mainCatId);
+      }
+    }
 
     await c.env.DB.prepare(
       `UPDATE products SET
@@ -391,6 +472,9 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
+// ============================================================
+// ✅ DELETE /api/products/:id
+// ============================================================
 products.delete('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
