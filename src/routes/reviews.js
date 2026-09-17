@@ -6,7 +6,7 @@ import { ok, fail, genId, safeJsonArray } from '../lib/utils.js';
 const reviews = new Hono();
 
 // ============================================================
-// ✅ Helper: Safe JSON array string
+// ✅ Helpers
 // ============================================================
 const toSafeJsonString = (val) => {
   if (!val) return JSON.stringify([]);
@@ -16,33 +16,37 @@ const toSafeJsonString = (val) => {
   return JSON.stringify(val);
 };
 
-// ============================================================
-// ✅ Helper: Serialize review (images parse + user info)
-// ============================================================
 function serializeReview(row) {
   if (!row) return null;
   return {
     ...row,
     _id: row.id,
+    productId: row.product_id,
+    userId: row.user_id,
     images: safeJsonArray(row.images),
+    videos: safeJsonArray(row.videos),
     helpful_count: row.helpful_count || 0,
+    helpful: row.helpful_count || 0,
     title: row.title || '',
     status: row.status || 'pending',
     admin_reply: row.admin_reply || null,
+    isRatingOnly: !row.review || !row.review.trim(),
+    // Aliases for frontend compatibility
+    comment: row.review || '',
   };
 }
 
 // ============================================================
 // ✅ PUBLIC: GET /api/reviews/product/:productId
-// Sirf APPROVED reviews dikhao
 // ============================================================
 reviews.get('/product/:productId', async (c) => {
   try {
     const productId = c.req.param('productId');
     const url = new URL(c.req.url);
     const sort = url.searchParams.get('sort') || 'newest';
-    const limit = Math.min(parseInt(url.searchParams.get('limit')) || 50, 100);
-    const offset = parseInt(url.searchParams.get('offset')) || 0;
+    const page = Math.max(parseInt(url.searchParams.get('page')) || 1, 1);
+    const limit = Math.min(parseInt(url.searchParams.get('limit')) || 10, 100);
+    const offset = (page - 1) * limit;
 
     let orderClause = 'ORDER BY r.created_at DESC';
     if (sort === 'helpful') orderClause = 'ORDER BY r.helpful_count DESC, r.created_at DESC';
@@ -58,7 +62,6 @@ reviews.get('/product/:productId', async (c) => {
        LIMIT ? OFFSET ?`
     ).bind(productId, limit, offset).all();
 
-    // Stats
     const stats = await c.env.DB.prepare(
       `SELECT 
         COUNT(*) as total,
@@ -67,25 +70,35 @@ reviews.get('/product/:productId', async (c) => {
         SUM(CASE WHEN rating = 4 THEN 1 ELSE 0 END) as four_star,
         SUM(CASE WHEN rating = 3 THEN 1 ELSE 0 END) as three_star,
         SUM(CASE WHEN rating = 2 THEN 1 ELSE 0 END) as two_star,
-        SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as one_star
+        SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as one_star,
+        SUM(CASE WHEN review IS NULL OR review = '' THEN 1 ELSE 0 END) as rating_only
        FROM reviews WHERE product_id = ? AND status = 'approved'`
     ).bind(productId).first();
 
-    return ok(
-      c,
-      (results || []).map(serializeReview),
-      {
-        total: stats?.total || 0,
-        avgRating: Number((stats?.avg_rating || 0).toFixed(1)),
-        distribution: {
-          5: stats?.five_star || 0,
-          4: stats?.four_star || 0,
-          3: stats?.three_star || 0,
-          2: stats?.two_star || 0,
-          1: stats?.one_star || 0,
-        },
-      }
-    );
+    const total = stats?.total || 0;
+    const pages = Math.max(1, Math.ceil(total / limit));
+    const reviewsList = (results || []).map(serializeReview);
+
+    // ✅ Response format ReviewContext ke hisaab se
+    return c.json({
+      success: true,
+      reviews: reviewsList,
+      data: reviewsList,
+      total,
+      page,
+      pages,
+      averageRating: Number((stats?.avg_rating || 0).toFixed(1)),
+      totalReviews: total,
+      ratingCounts: {
+        5: stats?.five_star || 0,
+        4: stats?.four_star || 0,
+        3: stats?.three_star || 0,
+        2: stats?.two_star || 0,
+        1: stats?.one_star || 0,
+      },
+      ratingOnlyCount: stats?.rating_only || 0,
+      reviewWithCommentCount: total - (stats?.rating_only || 0),
+    });
   } catch (err) {
     console.error('Load product reviews error:', err);
     return fail(c, `Failed to load reviews: ${err.message}`, 500);
@@ -122,16 +135,16 @@ reviews.get('/my-reviews', authMiddleware, async (c) => {
 
 // ============================================================
 // ✅ AUTH: GET /api/reviews/can-review/:productId
-// Check karo: delivered order hai? already reviewed?
 // ============================================================
 reviews.get('/can-review/:productId', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
     const productId = c.req.param('productId');
 
-    if (!user) return ok(c, { canReview: false, hasReviewed: false, reason: 'not_logged_in' });
+    if (!user) {
+      return ok(c, { canReview: false, alreadyReviewed: false, hasReviewed: false, reason: 'not_logged_in' });
+    }
 
-    // Already reviewed?
     const existingReview = await c.env.DB.prepare(
       'SELECT id FROM reviews WHERE user_id = ? AND product_id = ?'
     ).bind(user.id, productId).first();
@@ -139,13 +152,13 @@ reviews.get('/can-review/:productId', authMiddleware, async (c) => {
     if (existingReview) {
       return ok(c, {
         canReview: false,
+        alreadyReviewed: true,
         hasReviewed: true,
         reason: 'already_reviewed',
         reviewId: existingReview.id,
       });
     }
 
-    // Delivered order check — order_items join orders
     const deliveredOrder = await c.env.DB.prepare(
       `SELECT o.id as order_id, o.order_number
        FROM orders o
@@ -159,6 +172,7 @@ reviews.get('/can-review/:productId', authMiddleware, async (c) => {
     if (!deliveredOrder) {
       return ok(c, {
         canReview: false,
+        alreadyReviewed: false,
         hasReviewed: false,
         reason: 'not_delivered',
         message: 'You can only review products after delivery',
@@ -167,6 +181,7 @@ reviews.get('/can-review/:productId', authMiddleware, async (c) => {
 
     return ok(c, {
       canReview: true,
+      alreadyReviewed: false,
       hasReviewed: false,
       orderId: deliveredOrder.order_id,
       orderNumber: deliveredOrder.order_number,
@@ -178,8 +193,56 @@ reviews.get('/can-review/:productId', authMiddleware, async (c) => {
 });
 
 // ============================================================
+// ✅ AUTH: POST /api/reviews/upload — review images upload
+// ============================================================
+reviews.post('/upload', authMiddleware, async (c) => {
+  try {
+    const user = c.get('user');
+    if (!user) return fail(c, 'Unauthorized', 401);
+
+    const formData = await c.req.formData();
+    const urls = [];
+
+    const media = formData.getAll('media');
+    if (!media || media.length === 0) {
+      return fail(c, 'No files uploaded', 400);
+    }
+
+    // ✅ Use same upload logic as /api/upload (assume Cloudflare R2 binding)
+    for (const file of media) {
+      if (!file || typeof file === 'string') continue;
+
+      const ext = file.name?.split('.').pop() || 'jpg';
+      const key = `reviews/${user.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+      try {
+        // Cloudflare R2 binding: c.env.BUCKET (ya jo bhi binding name ho)
+        if (c.env.BUCKET) {
+          await c.env.BUCKET.put(key, file.stream(), {
+            httpMetadata: { contentType: file.type || 'image/jpeg' },
+          });
+          // ✅ R2 public URL — adjust based on your setup
+          urls.push(`https://pub-xxxxx.r2.dev/${key}`);
+        } else {
+          // Fallback: base64 data URL (not recommended for large files)
+          const buffer = await file.arrayBuffer();
+          const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+          urls.push(`data:${file.type};base64,${base64}`);
+        }
+      } catch (e) {
+        console.error('Upload file error:', e);
+      }
+    }
+
+    return ok(c, { urls });
+  } catch (err) {
+    console.error('Review upload error:', err);
+    return fail(c, `Upload failed: ${err.message}`, 500);
+  }
+});
+
+// ============================================================
 // ✅ AUTH: POST /api/reviews
-// Review submit karo — status: pending
 // ============================================================
 reviews.post('/', authMiddleware, async (c) => {
   try {
@@ -187,23 +250,32 @@ reviews.post('/', authMiddleware, async (c) => {
     if (!user) return fail(c, 'Unauthorized', 401);
 
     const body = await c.req.json().catch(() => ({}));
-    const { productId, rating, review, title, images = [] } = body;
+    const { 
+      productId, 
+      rating, 
+      review, 
+      comment, 
+      title, 
+      images = [], 
+      videos = [],
+      isRatingOnly = false,
+    } = body;
+
+    const reviewText = review || comment || '';
 
     if (!productId) return fail(c, 'productId is required.', 400);
     if (!rating || rating < 1 || rating > 5) return fail(c, 'rating must be between 1 and 5.', 400);
-    if (!review || !review.trim()) return fail(c, 'review text is required.', 400);
+    if (!isRatingOnly && !reviewText.trim()) return fail(c, 'review text is required.', 400);
 
-    const product = await c.env.DB.prepare('SELECT id, name FROM products WHERE id = ?').bind(productId).first();
+    const product = await c.env.DB.prepare('SELECT id FROM products WHERE id = ?').bind(productId).first();
     if (!product) return fail(c, 'Product not found.', 404);
 
-    // Already reviewed?
     const existingReview = await c.env.DB.prepare(
       'SELECT id FROM reviews WHERE user_id = ? AND product_id = ?'
     ).bind(user.id, productId).first();
 
     if (existingReview) return fail(c, 'You have already reviewed this product.', 409);
 
-    // Delivered check
     const deliveredOrder = await c.env.DB.prepare(
       `SELECT o.id as order_id
        FROM orders o
@@ -218,6 +290,7 @@ reviews.post('/', authMiddleware, async (c) => {
 
     const id = genId('rev');
     const imagesJson = toSafeJsonString(images);
+    const videosJson = toSafeJsonString(videos);
 
     await c.env.DB.prepare(
       `INSERT INTO reviews 
@@ -229,25 +302,16 @@ reviews.post('/', authMiddleware, async (c) => {
         user.id,
         productId,
         parseInt(rating),
-        review.trim(),
+        reviewText.trim(),
         (title || '').trim(),
         imagesJson,
         deliveredOrder.order_id
       )
       .run();
 
-    // ⚠️ Product rating update NAHI karo — sirf approved reviews se hoga
+    const created = await c.env.DB.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first();
 
-    return ok(c, {
-      id,
-      productId,
-      rating,
-      review,
-      title,
-      images,
-      status: 'pending',
-      message: 'Review submitted for approval',
-    }, undefined, 201);
+    return ok(c, { review: serializeReview(created) }, undefined, 201);
   } catch (err) {
     console.error('Submit review error:', err);
     return fail(c, `Failed to submit review: ${err.message}`, 500);
@@ -275,9 +339,9 @@ reviews.delete('/:id', authMiddleware, async (c) => {
 });
 
 // ============================================================
-// ✅ AUTH: POST /api/reviews/:id/helpful — Helpful vote
+// ✅ AUTH: PATCH /api/reviews/:id/helpful
 // ============================================================
-reviews.post('/:id/helpful', authMiddleware, async (c) => {
+const helpfulHandler = async (c) => {
   try {
     const id = c.req.param('id');
     const result = await c.env.DB.prepare(
@@ -285,11 +349,15 @@ reviews.post('/:id/helpful', authMiddleware, async (c) => {
     ).bind(id).run();
 
     if (result.meta?.changes === 0) return fail(c, 'Review not found.', 404);
-    return ok(c, { id, voted: true });
+
+    const updated = await c.env.DB.prepare('SELECT helpful_count FROM reviews WHERE id = ?').bind(id).first();
+    return ok(c, { id, helpful: updated?.helpful_count || 0, voted: true });
   } catch (err) {
     return fail(c, `Failed to vote: ${err.message}`, 500);
   }
-});
+};
+reviews.patch('/:id/helpful', authMiddleware, helpfulHandler);
+reviews.post('/:id/helpful', authMiddleware, helpfulHandler);
 
 // ============================================================
 // 🛡️ ADMIN: GET /api/reviews/admin/all
@@ -298,9 +366,11 @@ reviews.get('/admin/all', authMiddleware, requireAdmin, async (c) => {
   try {
     const url = new URL(c.req.url);
     const status = url.searchParams.get('status') || 'all';
-    const limit = Math.min(parseInt(url.searchParams.get('limit')) || 100, 500);
-    const offset = parseInt(url.searchParams.get('offset')) || 0;
+    const page = Math.max(parseInt(url.searchParams.get('page')) || 1, 1);
+    const limit = Math.min(parseInt(url.searchParams.get('limit')) || 20, 100);
+    const offset = (page - 1) * limit;
     const search = url.searchParams.get('search') || '';
+    const type = url.searchParams.get('type') || 'all'; // all | rating_only | with_comment
 
     let whereClause = 'WHERE 1=1';
     const bindings = [];
@@ -308,6 +378,12 @@ reviews.get('/admin/all', authMiddleware, requireAdmin, async (c) => {
     if (status !== 'all') {
       whereClause += ' AND r.status = ?';
       bindings.push(status);
+    }
+
+    if (type === 'rating_only') {
+      whereClause += " AND (r.review IS NULL OR r.review = '')";
+    } else if (type === 'with_comment') {
+      whereClause += " AND r.review IS NOT NULL AND r.review != ''";
     }
 
     if (search) {
@@ -340,6 +416,9 @@ reviews.get('/admin/all', authMiddleware, requireAdmin, async (c) => {
        ${whereClause}`
     ).bind(...bindings).first();
 
+    const total = countRow?.total || 0;
+    const pages = Math.max(1, Math.ceil(total / limit));
+
     const formatted = (results || []).map(r => ({
       ...serializeReview(r),
       product_name: r.product_name,
@@ -350,14 +429,50 @@ reviews.get('/admin/all', authMiddleware, requireAdmin, async (c) => {
       user_avatar: r.user_avatar,
     }));
 
-    return ok(c, formatted, {
-      total: countRow?.total || 0,
+    return c.json({
+      success: true,
+      data: formatted,
+      reviews: formatted,
+      total,
+      page,
+      pages,
       limit,
       offset,
     });
   } catch (err) {
     console.error('Admin load reviews error:', err);
     return fail(c, `Failed to load reviews: ${err.message}`, 500);
+  }
+});
+
+// ============================================================
+// 🛡️ ADMIN: GET /api/reviews/admin/pending
+// ============================================================
+reviews.get('/admin/pending', authMiddleware, requireAdmin, async (c) => {
+  try {
+    const { results } = await c.env.DB.prepare(
+      `SELECT r.*, p.name as product_name, p.images as product_images,
+              u.name as user_name, u.email as user_email, u.avatar as user_avatar
+       FROM reviews r
+       LEFT JOIN products p ON r.product_id = p.id
+       LEFT JOIN users u ON r.user_id = u.id
+       WHERE r.status = 'pending'
+       ORDER BY r.created_at DESC
+       LIMIT 100`
+    ).all();
+
+    const formatted = (results || []).map(r => ({
+      ...serializeReview(r),
+      product_name: r.product_name,
+      product_image: safeJsonArray(r.product_images)[0] || null,
+      user_name: r.user_name,
+      user_email: r.user_email,
+      user_avatar: r.user_avatar,
+    }));
+
+    return ok(c, formatted);
+  } catch (err) {
+    return fail(c, `Failed to load pending reviews: ${err.message}`, 500);
   }
 });
 
@@ -376,13 +491,16 @@ reviews.get('/admin/stats', authMiddleware, requireAdmin, async (c) => {
        FROM reviews`
     ).first();
 
-    return ok(c, {
+    const statsData = {
       total: stats?.total || 0,
       pending: stats?.pending || 0,
       approved: stats?.approved || 0,
       rejected: stats?.rejected || 0,
       avgRating: Number((stats?.avg_rating || 0).toFixed(1)),
-    });
+    };
+
+    // ✅ Response format both keys
+    return c.json({ success: true, data: statsData, stats: statsData });
   } catch (err) {
     return fail(c, `Failed to load stats: ${err.message}`, 500);
   }
@@ -401,7 +519,6 @@ reviews.patch('/admin/:id/approve', authMiddleware, requireAdmin, async (c) => {
       `UPDATE reviews SET status = 'approved', updated_at = datetime('now') WHERE id = ?`
     ).bind(id).run();
 
-    // Product rating update karo
     await c.env.DB.prepare(
       `UPDATE products SET 
         rating = (SELECT AVG(rating) FROM reviews WHERE product_id = ? AND status = 'approved'),
@@ -409,7 +526,8 @@ reviews.patch('/admin/:id/approve', authMiddleware, requireAdmin, async (c) => {
        WHERE id = ?`
     ).bind(existing.product_id, existing.product_id, existing.product_id).run();
 
-    return ok(c, { id, status: 'approved' });
+    const updated = await c.env.DB.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first();
+    return ok(c, { review: serializeReview(updated), status: 'approved' });
   } catch (err) {
     return fail(c, `Failed to approve: ${err.message}`, 500);
   }
@@ -428,7 +546,6 @@ reviews.patch('/admin/:id/reject', authMiddleware, requireAdmin, async (c) => {
       `UPDATE reviews SET status = 'rejected', updated_at = datetime('now') WHERE id = ?`
     ).bind(id).run();
 
-    // Product rating recalculate (agar pehle approved tha)
     await c.env.DB.prepare(
       `UPDATE products SET 
         rating = COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = ? AND status = 'approved'), 0),
@@ -443,6 +560,80 @@ reviews.patch('/admin/:id/reject', authMiddleware, requireAdmin, async (c) => {
 });
 
 // ============================================================
+// 🛡️ ADMIN: PATCH /api/reviews/admin/bulk-approve
+// ============================================================
+reviews.patch('/admin/bulk-approve', authMiddleware, requireAdmin, async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const { reviewIds = [] } = body;
+
+    if (!Array.isArray(reviewIds) || reviewIds.length === 0) {
+      return fail(c, 'reviewIds array is required.', 400);
+    }
+
+    let approved = 0;
+    for (const id of reviewIds) {
+      const existing = await c.env.DB.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first();
+      if (!existing) continue;
+
+      await c.env.DB.prepare(
+        `UPDATE reviews SET status = 'approved', updated_at = datetime('now') WHERE id = ?`
+      ).bind(id).run();
+
+      await c.env.DB.prepare(
+        `UPDATE products SET 
+          rating = (SELECT AVG(rating) FROM reviews WHERE product_id = ? AND status = 'approved'),
+          review_count = (SELECT COUNT(*) FROM reviews WHERE product_id = ? AND status = 'approved')
+         WHERE id = ?`
+      ).bind(existing.product_id, existing.product_id, existing.product_id).run();
+
+      approved++;
+    }
+
+    return ok(c, { approved, total: reviewIds.length });
+  } catch (err) {
+    return fail(c, `Bulk approve failed: ${err.message}`, 500);
+  }
+});
+
+// ============================================================
+// 🛡️ ADMIN: PATCH /api/reviews/admin/bulk-reject
+// ============================================================
+reviews.patch('/admin/bulk-reject', authMiddleware, requireAdmin, async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const { reviewIds = [] } = body;
+
+    if (!Array.isArray(reviewIds) || reviewIds.length === 0) {
+      return fail(c, 'reviewIds array is required.', 400);
+    }
+
+    let rejected = 0;
+    for (const id of reviewIds) {
+      const existing = await c.env.DB.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first();
+      if (!existing) continue;
+
+      await c.env.DB.prepare(
+        `UPDATE reviews SET status = 'rejected', updated_at = datetime('now') WHERE id = ?`
+      ).bind(id).run();
+
+      await c.env.DB.prepare(
+        `UPDATE products SET 
+          rating = COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = ? AND status = 'approved'), 0),
+          review_count = (SELECT COUNT(*) FROM reviews WHERE product_id = ? AND status = 'approved')
+         WHERE id = ?`
+      ).bind(existing.product_id, existing.product_id, existing.product_id).run();
+
+      rejected++;
+    }
+
+    return ok(c, { rejected, total: reviewIds.length });
+  } catch (err) {
+    return fail(c, `Bulk reject failed: ${err.message}`, 500);
+  }
+});
+
+// ============================================================
 // 🛡️ ADMIN: DELETE /api/reviews/admin/:id
 // ============================================================
 reviews.delete('/admin/:id', authMiddleware, requireAdmin, async (c) => {
@@ -453,7 +644,6 @@ reviews.delete('/admin/:id', authMiddleware, requireAdmin, async (c) => {
 
     await c.env.DB.prepare('DELETE FROM reviews WHERE id = ?').bind(id).run();
 
-    // Product rating recalculate
     await c.env.DB.prepare(
       `UPDATE products SET 
         rating = COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = ? AND status = 'approved'), 0),
@@ -468,8 +658,56 @@ reviews.delete('/admin/:id', authMiddleware, requireAdmin, async (c) => {
 });
 
 // ============================================================
+// 🛡️ ADMIN: GET /api/reviews/admin/export — CSV
+// ============================================================
+reviews.get('/admin/export', authMiddleware, requireAdmin, async (c) => {
+  try {
+    const url = new URL(c.req.url);
+    const status = url.searchParams.get('status') || 'all';
+
+    let whereClause = 'WHERE 1=1';
+    const bindings = [];
+    if (status !== 'all') {
+      whereClause += ' AND r.status = ?';
+      bindings.push(status);
+    }
+
+    const { results } = await c.env.DB.prepare(
+      `SELECT r.*, p.name as product_name, u.name as user_name, u.email as user_email
+       FROM reviews r
+       LEFT JOIN products p ON r.product_id = p.id
+       LEFT JOIN users u ON r.user_id = u.id
+       ${whereClause}
+       ORDER BY r.created_at DESC
+       LIMIT 5000`
+    ).bind(...bindings).all();
+
+    const rows = [['ID', 'Product', 'User', 'Email', 'Rating', 'Title', 'Review', 'Status', 'Date']];
+    for (const r of results || []) {
+      rows.push([
+        r.id,
+        r.product_name || '',
+        r.user_name || '',
+        r.user_email || '',
+        r.rating,
+        (r.title || '').replace(/,/g, ';'),
+        (r.review || '').replace(/,/g, ';').replace(/\n/g, ' '),
+        r.status,
+        r.created_at,
+      ]);
+    }
+
+    const csv = rows.map(row => row.join(',')).join('\n');
+    c.header('Content-Type', 'text/csv');
+    c.header('Content-Disposition', `attachment; filename="reviews-${status}-${Date.now()}.csv"`);
+    return c.body(csv);
+  } catch (err) {
+    return fail(c, `Export failed: ${err.message}`, 500);
+  }
+});
+
+// ============================================================
 // 🛡️ ADMIN: POST /api/reviews/admin/add
-// Admin manually review add kare — status: approved
 // ============================================================
 reviews.post('/admin/add', authMiddleware, requireAdmin, async (c) => {
   try {
@@ -480,17 +718,12 @@ reviews.post('/admin/add', authMiddleware, requireAdmin, async (c) => {
     if (!rating || rating < 1 || rating > 5) return fail(c, 'rating must be between 1 and 5.', 400);
     if (!review || !review.trim()) return fail(c, 'review text is required.', 400);
 
-    // Product check
     const product = await c.env.DB.prepare('SELECT id FROM products WHERE id = ?').bind(productId).first();
     if (!product) return fail(c, 'Product not found.', 404);
 
-    // User ID: agar diya hai to use karo, warna 'admin_guest'
     let finalUserId = userId;
     if (!finalUserId) {
-      // Ek temporary admin review user
       finalUserId = 'admin_review_user';
-      
-      // Ensure user exists (optional)
       const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(finalUserId).first();
       if (!existingUser) {
         try {
@@ -498,9 +731,7 @@ reviews.post('/admin/add', authMiddleware, requireAdmin, async (c) => {
             `INSERT INTO users (id, name, email, password, created_at) 
              VALUES (?, ?, ?, 'ADMIN_REVIEW_NO_LOGIN', datetime('now'))`
           ).bind(finalUserId, userName || 'Admin Review', 'admin-review@mypinkshop.com').run();
-        } catch (e) {
-          // User already exists — ignore
-        }
+        } catch (e) {}
       }
     }
 
@@ -512,18 +743,9 @@ reviews.post('/admin/add', authMiddleware, requireAdmin, async (c) => {
         (id, user_id, product_id, rating, review, title, images, status, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', datetime('now'), datetime('now'))`
     )
-      .bind(
-        id,
-        finalUserId,
-        productId,
-        parseInt(rating),
-        review.trim(),
-        (title || '').trim(),
-        imagesJson
-      )
+      .bind(id, finalUserId, productId, parseInt(rating), review.trim(), (title || '').trim(), imagesJson)
       .run();
 
-    // Product rating recalculate
     await c.env.DB.prepare(
       `UPDATE products SET 
         rating = COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = ? AND status = 'approved'), 0),
@@ -531,16 +753,8 @@ reviews.post('/admin/add', authMiddleware, requireAdmin, async (c) => {
        WHERE id = ?`
     ).bind(productId, productId, productId).run();
 
-    return ok(c, {
-      id,
-      productId,
-      rating,
-      review,
-      title,
-      images,
-      status: 'approved',
-      message: 'Review added successfully',
-    }, undefined, 201);
+    const created = await c.env.DB.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first();
+    return ok(c, { review: serializeReview(created) }, undefined, 201);
   } catch (err) {
     console.error('Admin add review error:', err);
     return fail(c, `Failed to add review: ${err.message}`, 500);
