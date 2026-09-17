@@ -19,18 +19,20 @@ const toSafeJsonString = (val) => {
 function serializeReview(row) {
   if (!row) return null;
   
-  // ✅ User name fallback
-  let userName = row.user_name;
-  if (!userName && row.user_id?.startsWith('admin_')) {
-    userName = 'Admin Review';
-  }
+  // ✅ Priority: author_name (admin-added) > user_name (customer)
+  const userName = row.author_name || row.user_name || 'Customer';
+  
+  // ✅ Date fix — SQLite format to ISO
+  let createdAt = row.created_at || row.createdAt || null;
+  if (createdAt) createdAt = String(createdAt).replace(' ', 'T');
   
   return {
     ...row,
     _id: row.id,
     productId: row.product_id,
     userId: row.user_id,
-    user_name: userName || 'Anonymous',
+    user_name: userName,           // ✅ Final name (author_name priority)
+    author_name: row.author_name || null,
     images: safeJsonArray(row.images),
     videos: safeJsonArray(row.videos),
     helpful_count: row.helpful_count || 0,
@@ -40,7 +42,8 @@ function serializeReview(row) {
     admin_reply: row.admin_reply || null,
     isRatingOnly: !row.review || !row.review.trim(),
     comment: row.review || '',
-    created_at: row.created_at || row.createdAt,
+    created_at: createdAt,
+    createdAt: createdAt,
   };
 }
 
@@ -245,7 +248,7 @@ reviews.post('/upload', authMiddleware, async (c) => {
 });
 
 // ============================================================
-// ✅ AUTH: POST /api/reviews
+// ✅ AUTH: POST /api/reviews (customer)
 // ============================================================
 reviews.post('/', authMiddleware, async (c) => {
   try {
@@ -409,7 +412,7 @@ reviews.get('/admin/all', authMiddleware, requireAdmin, async (c) => {
       product_name: r.product_name,
       product_image: safeJsonArray(r.product_images)[0] || null,
       product_price: r.product_price,
-      user_name: r.user_name,
+      user_name: r.author_name || r.user_name || 'Customer',
       user_email: r.user_email,
       user_avatar: r.user_avatar,
     }));
@@ -450,7 +453,7 @@ reviews.get('/admin/pending', authMiddleware, requireAdmin, async (c) => {
       ...serializeReview(r),
       product_name: r.product_name,
       product_image: safeJsonArray(r.product_images)[0] || null,
-      user_name: r.user_name,
+      user_name: r.author_name || r.user_name || 'Customer',
       user_email: r.user_email,
       user_avatar: r.user_avatar,
     }));
@@ -666,12 +669,13 @@ reviews.get('/admin/export', authMiddleware, requireAdmin, async (c) => {
        LIMIT 5000`
     ).bind(...bindings).all();
 
-    const rows = [['ID', 'Product', 'User', 'Rating', 'Title', 'Review', 'Status', 'Date']];
+    const rows = [['ID', 'Product', 'Author', 'Rating', 'Title', 'Review', 'Status', 'Date']];
     for (const r of results || []) {
+      const authorName = r.author_name || r.user_name || 'Customer';
       rows.push([
         r.id,
         r.product_name || '',
-        r.user_name || 'Anonymous',
+        authorName,
         r.rating,
         (r.title || '').replace(/,/g, ';'),
         (r.review || '').replace(/,/g, ';').replace(/\n/g, ' '),
@@ -691,44 +695,52 @@ reviews.get('/admin/export', authMiddleware, requireAdmin, async (c) => {
 
 // ============================================================
 // 🛡️ ADMIN: POST /api/reviews/admin/add
-// ✅ FIXED: Har review ke liye unique user
+// ✅ Admin jaise chahe naam daale — author_name mein save hoga
 // ============================================================
 reviews.post('/admin/add', authMiddleware, requireAdmin, async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
-    const { productId, userId, rating, review, title, images = [], userName } = body;
+    const { productId, rating, review, title, images = [], userName } = body;
 
     if (!productId) return fail(c, 'productId is required.', 400);
     if (!rating || rating < 1 || rating > 5) return fail(c, 'rating must be between 1 and 5.', 400);
     if (!review || !review.trim()) return fail(c, 'review text is required.', 400);
+    if (!userName || !userName.trim()) return fail(c, 'userName (author name) is required.', 400);
 
     const product = await c.env.DB.prepare('SELECT id FROM products WHERE id = ?').bind(productId).first();
     if (!product) return fail(c, 'Product not found.', 404);
 
-    // ✅ FIXED: Unique user per admin review
-    let finalUserId = userId;
-    if (!finalUserId) {
-      finalUserId = `admin_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      
+    // ✅ Always same admin user
+    const finalUserId = 'admin_review_user';
+
+    // Ensure admin user exists (once)
+    const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(finalUserId).first();
+    if (!existingUser) {
       await c.env.DB.prepare(
         `INSERT INTO users (id, name, email, password, created_at) 
-         VALUES (?, ?, ?, 'ADMIN_REVIEW_NO_LOGIN', datetime('now'))`
-      ).bind(
-        finalUserId,
-        (userName || 'Admin Review').trim(),
-        `${finalUserId}@mypinkshop.com`
-      ).run();
+         VALUES (?, 'Admin', 'admin-review@mypinkshop.com', 'ADMIN_REVIEW_NO_LOGIN', datetime('now'))`
+      ).bind(finalUserId).run();
     }
 
     const id = genId('rev');
     const imagesJson = toSafeJsonString(images);
+    const authorName = userName.trim();      // ✅ Jo admin ne daala
 
     await c.env.DB.prepare(
       `INSERT INTO reviews 
-        (id, user_id, product_id, rating, review, title, images, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', datetime('now'), datetime('now'))`
+        (id, user_id, product_id, rating, review, title, images, author_name, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'approved', datetime('now'), datetime('now'))`
     )
-      .bind(id, finalUserId, productId, parseInt(rating), review.trim(), (title || '').trim(), imagesJson)
+      .bind(
+        id,
+        finalUserId,
+        productId,
+        parseInt(rating),
+        review.trim(),
+        (title || '').trim(),
+        imagesJson,
+        authorName
+      )
       .run();
 
     await c.env.DB.prepare(
@@ -739,15 +751,7 @@ reviews.post('/admin/add', authMiddleware, requireAdmin, async (c) => {
     ).bind(productId, productId, productId).run();
 
     const created = await c.env.DB.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first();
-    
-    // ✅ User name fetch karo response ke liye
-    const userRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(finalUserId).first();
-    const reviewWithName = {
-      ...created,
-      user_name: userRow?.name || userName || 'Admin Review',
-    };
-    
-    return ok(c, { review: serializeReview(reviewWithName) }, undefined, 201);
+    return ok(c, { review: serializeReview(created) }, undefined, 201);
   } catch (err) {
     console.error('Admin add review error:', err);
     return fail(c, `Failed to add review: ${err.message}`, 500);
