@@ -18,11 +18,19 @@ const toSafeJsonString = (val) => {
 
 function serializeReview(row) {
   if (!row) return null;
+  
+  // ✅ User name fallback
+  let userName = row.user_name;
+  if (!userName && row.user_id?.startsWith('admin_')) {
+    userName = 'Admin Review';
+  }
+  
   return {
     ...row,
     _id: row.id,
     productId: row.product_id,
     userId: row.user_id,
+    user_name: userName || 'Anonymous',
     images: safeJsonArray(row.images),
     videos: safeJsonArray(row.videos),
     helpful_count: row.helpful_count || 0,
@@ -31,8 +39,8 @@ function serializeReview(row) {
     status: row.status || 'pending',
     admin_reply: row.admin_reply || null,
     isRatingOnly: !row.review || !row.review.trim(),
-    // Aliases for frontend compatibility
     comment: row.review || '',
+    created_at: row.created_at || row.createdAt,
   };
 }
 
@@ -79,7 +87,6 @@ reviews.get('/product/:productId', async (c) => {
     const pages = Math.max(1, Math.ceil(total / limit));
     const reviewsList = (results || []).map(serializeReview);
 
-    // ✅ Response format ReviewContext ke hisaab se
     return c.json({
       success: true,
       reviews: reviewsList,
@@ -208,7 +215,6 @@ reviews.post('/upload', authMiddleware, async (c) => {
       return fail(c, 'No files uploaded', 400);
     }
 
-    // ✅ Use same upload logic as /api/upload (assume Cloudflare R2 binding)
     for (const file of media) {
       if (!file || typeof file === 'string') continue;
 
@@ -216,15 +222,12 @@ reviews.post('/upload', authMiddleware, async (c) => {
       const key = `reviews/${user.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
 
       try {
-        // Cloudflare R2 binding: c.env.BUCKET (ya jo bhi binding name ho)
         if (c.env.BUCKET) {
           await c.env.BUCKET.put(key, file.stream(), {
             httpMetadata: { contentType: file.type || 'image/jpeg' },
           });
-          // ✅ R2 public URL — adjust based on your setup
           urls.push(`https://pub-xxxxx.r2.dev/${key}`);
         } else {
-          // Fallback: base64 data URL (not recommended for large files)
           const buffer = await file.arrayBuffer();
           const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
           urls.push(`data:${file.type};base64,${base64}`);
@@ -250,16 +253,7 @@ reviews.post('/', authMiddleware, async (c) => {
     if (!user) return fail(c, 'Unauthorized', 401);
 
     const body = await c.req.json().catch(() => ({}));
-    const { 
-      productId, 
-      rating, 
-      review, 
-      comment, 
-      title, 
-      images = [], 
-      videos = [],
-      isRatingOnly = false,
-    } = body;
+    const { productId, rating, review, comment, title, images = [], videos = [], isRatingOnly = false } = body;
 
     const reviewText = review || comment || '';
 
@@ -297,16 +291,7 @@ reviews.post('/', authMiddleware, async (c) => {
         (id, user_id, product_id, rating, review, title, images, status, order_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'), datetime('now'))`
     )
-      .bind(
-        id,
-        user.id,
-        productId,
-        parseInt(rating),
-        reviewText.trim(),
-        (title || '').trim(),
-        imagesJson,
-        deliveredOrder.order_id
-      )
+      .bind(id, user.id, productId, parseInt(rating), reviewText.trim(), (title || '').trim(), imagesJson, deliveredOrder.order_id)
       .run();
 
     const created = await c.env.DB.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first();
@@ -370,7 +355,7 @@ reviews.get('/admin/all', authMiddleware, requireAdmin, async (c) => {
     const limit = Math.min(parseInt(url.searchParams.get('limit')) || 20, 100);
     const offset = (page - 1) * limit;
     const search = url.searchParams.get('search') || '';
-    const type = url.searchParams.get('type') || 'all'; // all | rating_only | with_comment
+    const type = url.searchParams.get('type') || 'all';
 
     let whereClause = 'WHERE 1=1';
     const bindings = [];
@@ -499,7 +484,6 @@ reviews.get('/admin/stats', authMiddleware, requireAdmin, async (c) => {
       avgRating: Number((stats?.avg_rating || 0).toFixed(1)),
     };
 
-    // ✅ Response format both keys
     return c.json({ success: true, data: statsData, stats: statsData });
   } catch (err) {
     return fail(c, `Failed to load stats: ${err.message}`, 500);
@@ -682,13 +666,12 @@ reviews.get('/admin/export', authMiddleware, requireAdmin, async (c) => {
        LIMIT 5000`
     ).bind(...bindings).all();
 
-    const rows = [['ID', 'Product', 'User', 'Email', 'Rating', 'Title', 'Review', 'Status', 'Date']];
+    const rows = [['ID', 'Product', 'User', 'Rating', 'Title', 'Review', 'Status', 'Date']];
     for (const r of results || []) {
       rows.push([
         r.id,
         r.product_name || '',
-        r.user_name || '',
-        r.user_email || '',
+        r.user_name || 'Anonymous',
         r.rating,
         (r.title || '').replace(/,/g, ';'),
         (r.review || '').replace(/,/g, ';').replace(/\n/g, ' '),
@@ -708,6 +691,7 @@ reviews.get('/admin/export', authMiddleware, requireAdmin, async (c) => {
 
 // ============================================================
 // 🛡️ ADMIN: POST /api/reviews/admin/add
+// ✅ FIXED: Har review ke liye unique user
 // ============================================================
 reviews.post('/admin/add', authMiddleware, requireAdmin, async (c) => {
   try {
@@ -721,18 +705,19 @@ reviews.post('/admin/add', authMiddleware, requireAdmin, async (c) => {
     const product = await c.env.DB.prepare('SELECT id FROM products WHERE id = ?').bind(productId).first();
     if (!product) return fail(c, 'Product not found.', 404);
 
+    // ✅ FIXED: Unique user per admin review
     let finalUserId = userId;
     if (!finalUserId) {
-      finalUserId = 'admin_review_user';
-      const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(finalUserId).first();
-      if (!existingUser) {
-        try {
-          await c.env.DB.prepare(
-            `INSERT INTO users (id, name, email, password, created_at) 
-             VALUES (?, ?, ?, 'ADMIN_REVIEW_NO_LOGIN', datetime('now'))`
-          ).bind(finalUserId, userName || 'Admin Review', 'admin-review@mypinkshop.com').run();
-        } catch (e) {}
-      }
+      finalUserId = `admin_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      
+      await c.env.DB.prepare(
+        `INSERT INTO users (id, name, email, password, created_at) 
+         VALUES (?, ?, ?, 'ADMIN_REVIEW_NO_LOGIN', datetime('now'))`
+      ).bind(
+        finalUserId,
+        (userName || 'Admin Review').trim(),
+        `${finalUserId}@mypinkshop.com`
+      ).run();
     }
 
     const id = genId('rev');
@@ -754,7 +739,15 @@ reviews.post('/admin/add', authMiddleware, requireAdmin, async (c) => {
     ).bind(productId, productId, productId).run();
 
     const created = await c.env.DB.prepare('SELECT * FROM reviews WHERE id = ?').bind(id).first();
-    return ok(c, { review: serializeReview(created) }, undefined, 201);
+    
+    // ✅ User name fetch karo response ke liye
+    const userRow = await c.env.DB.prepare('SELECT name FROM users WHERE id = ?').bind(finalUserId).first();
+    const reviewWithName = {
+      ...created,
+      user_name: userRow?.name || userName || 'Admin Review',
+    };
+    
+    return ok(c, { review: serializeReview(reviewWithName) }, undefined, 201);
   } catch (err) {
     console.error('Admin add review error:', err);
     return fail(c, `Failed to add review: ${err.message}`, 500);
