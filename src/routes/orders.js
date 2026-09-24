@@ -54,9 +54,12 @@ async function pushOrderToShiprocket(env, order, items, address, userEmail) {
       billing_email: userEmail || 'customer@mypinkshop.com',
       billing_phone: parsedAddress.phone || '',
       shipping_is_billing: true,
+      // ✅ Variant info Shiprocket me bhejo
       order_items: items.map(i => ({
-        name: i.product_name || i.name,
-        sku: i.product_id || i.productId || 'SKU01',
+        name: i.variant_label
+          ? `${i.product_name || i.name} (${i.variant_label})`
+          : (i.product_name || i.name),
+        sku: i.variant_sku || i.variantSku || i.product_id || i.productId || 'SKU01',
         units: i.quantity || 1,
         selling_price: i.price || 0
       })),
@@ -88,12 +91,12 @@ async function pushOrderToShiprocket(env, order, items, address, userEmail) {
 /* Customer                                                              */
 /* --------------------------------------------------------------------- */
 
-// ✅ POST /api/orders - Create new order and save product brand into order_items
+// ✅ POST /api/orders - Create new order with variant info
 orders.post('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
     const body = await c.req.json().catch(() => ({}));
-    
+
     if (!body.items || !Array.isArray(body.items) || body.items.length === 0) {
       return fail(c, 'items must be a non-empty array.', 400);
     }
@@ -103,12 +106,12 @@ orders.post('/', authMiddleware, async (c) => {
 
     const id = genId('order');
     const orderNumber = genOrderNumber();
-    
+
     let subtotal = 0;
     for (const item of body.items) {
       subtotal += (item.price || 0) * (item.quantity || 1);
     }
-    
+
     const taxAmount = Math.round(subtotal * 0.05 * 100) / 100;
     const shippingAmount = subtotal >= 499 ? 0 : 49;
     const totalAmount = subtotal + taxAmount + shippingAmount;
@@ -147,11 +150,25 @@ orders.post('/', authMiddleware, async (c) => {
         }
       } catch (e) {}
 
+      // ✅ Variant fields extract karo
+      const variantId = item.variantId || null;
+      const variantSku = item.variantSku || null;
+      const size = item.size || null;
+      const color = item.color || null;
+      const option1Name = item.option1Name || null;
+      const option2Name = item.option2Name || null;
+      const variantLabel = item.variantLabel || null;
+
       await c.env.DB.prepare(
-        `INSERT INTO order_items (id, order_id, product_id, product_name, price, quantity, subtotal, brand)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO order_items 
+          (id, order_id, product_id, product_name, price, quantity, subtotal, brand,
+           variant_id, variant_sku, size, color, option1_name, option2_name, variant_label)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-        .bind(itemId, id, productId, item.name || 'Product', item.price || 0, item.quantity || 1, itemSubtotal, itemBrand)
+        .bind(
+          itemId, id, productId, item.name || 'Product', item.price || 0, item.quantity || 1, itemSubtotal, itemBrand,
+          variantId, variantSku, size, color, option1Name, option2Name, variantLabel
+        )
         .run();
 
       insertedItems.push({
@@ -160,7 +177,14 @@ orders.post('/', authMiddleware, async (c) => {
         price: item.price || 0,
         quantity: item.quantity || 1,
         subtotal: itemSubtotal,
-        brand: itemBrand
+        brand: itemBrand,
+        variant_id: variantId,
+        variant_sku: variantSku,
+        size: size,
+        color: color,
+        option1_name: option1Name,
+        option2_name: option2Name,
+        variant_label: variantLabel,
       });
     }
 
@@ -192,27 +216,64 @@ orders.post('/create', authMiddleware, async (c) => {
     const resolvedItems = [];
 
     for (const item of items) {
-      const product = await c.env.DB.prepare(
-        'SELECT id, name, price, stock, brand FROM products WHERE id = ?'
-      )
-        .bind(item.productId)
-        .first();
+      // ✅ Variant fields
+      const variantId = item.variantId || null;
+      const variantSku = item.variantSku || null;
+      const size = item.size || null;
+      const color = item.color || null;
+      const option1Name = item.option1Name || null;
+      const option2Name = item.option2Name || null;
+      const variantLabel = item.variantLabel || null;
 
-      if (!product) return fail(c, `Product not found: ${item.productId}`, 404);
-      if (product.stock < item.quantity) {
-        return fail(c, `Insufficient stock for ${product.name}.`, 400);
+      let product = null;
+      let resolvedPrice = 0;
+
+      // ✅ Variant diya hai to variant ka stock check karo
+      if (variantId) {
+        const variant = await c.env.DB.prepare(
+          'SELECT * FROM product_variants WHERE id = ? AND product_id = ?'
+        ).bind(variantId, item.productId).first();
+
+        if (!variant) return fail(c, `Variant not found: ${variantId}`, 404);
+        if (variant.stock < item.quantity) {
+          return fail(c, `Insufficient stock for variant ${variant.sku}`, 400);
+        }
+
+        product = await c.env.DB.prepare(
+          'SELECT id, name, price, brand FROM products WHERE id = ?'
+        ).bind(item.productId).first();
+        if (!product) return fail(c, `Product not found: ${item.productId}`, 404);
+
+        resolvedPrice = variant.price || product.price || 0;
+      } else {
+        product = await c.env.DB.prepare(
+          'SELECT id, name, price, stock, brand FROM products WHERE id = ?'
+        ).bind(item.productId).first();
+
+        if (!product) return fail(c, `Product not found: ${item.productId}`, 404);
+        if (product.stock < item.quantity) {
+          return fail(c, `Insufficient stock for ${product.name}.`, 400);
+        }
+        resolvedPrice = product.price;
       }
 
-      const lineSubtotal = product.price * item.quantity;
+      const lineSubtotal = resolvedPrice * item.quantity;
       subtotal += lineSubtotal;
 
       resolvedItems.push({
         productId: product.id,
         productName: product.name,
-        price: product.price,
+        price: resolvedPrice,
         quantity: item.quantity,
         subtotal: lineSubtotal,
         brand: product.brand || 'Richfem',
+        variantId,
+        variantSku,
+        size,
+        color,
+        option1Name,
+        option2Name,
+        variantLabel,
       });
     }
 
@@ -245,15 +306,30 @@ orders.post('/create', authMiddleware, async (c) => {
     for (const item of resolvedItems) {
       const itemId = genId('oi');
       await c.env.DB.prepare(
-        `INSERT INTO order_items (id, order_id, product_id, product_name, price, quantity, subtotal, brand)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO order_items 
+          (id, order_id, product_id, product_name, price, quantity, subtotal, brand,
+           variant_id, variant_sku, size, color, option1_name, option2_name, variant_label)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
-        .bind(itemId, orderId, item.productId, item.productName, item.price, item.quantity, item.subtotal, item.brand)
+        .bind(
+          itemId, orderId, item.productId, item.productName, item.price, item.quantity, item.subtotal, item.brand,
+          item.variantId, item.variantSku, item.size, item.color, item.option1Name, item.option2Name, item.variantLabel
+        )
         .run();
 
-      await c.env.DB.prepare('UPDATE products SET stock = stock - ? WHERE id = ?')
-        .bind(item.quantity, item.productId)
-        .run();
+      // ✅ Stock update — variant diya to variant ka, warna product ka
+      if (item.variantId) {
+        await c.env.DB.prepare('UPDATE product_variants SET stock = MAX(0, stock - ?) WHERE id = ?')
+          .bind(item.quantity, item.variantId)
+          .run();
+        await c.env.DB.prepare('UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?')
+          .bind(item.quantity, item.productId)
+          .run();
+      } else {
+        await c.env.DB.prepare('UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?')
+          .bind(item.quantity, item.productId)
+          .run();
+      }
     }
 
     for (const item of resolvedItems) {
@@ -313,13 +389,21 @@ orders.get('/user', authMiddleware, async (c) => {
       const orderIds = userOrders.map((o) => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
       const { results: allItems } = await c.env.DB.prepare(
-        `SELECT oi.*, p.images as product_images, p.brand as product_brand FROM order_items oi LEFT JOIN products p ON oi.product_id = p.id WHERE oi.order_id IN (${placeholders})`
+        `SELECT oi.*, p.images as product_images, p.brand as product_brand 
+         FROM order_items oi 
+         LEFT JOIN products p ON oi.product_id = p.id 
+         WHERE oi.order_id IN (${placeholders})`
       ).bind(...orderIds).all();
 
       const itemsByOrder = {};
       for (const item of allItems || []) {
         (itemsByOrder[item.order_id] ||= []).push({
           ...item,
+          variantId: item.variant_id,
+          variantSku: item.variant_sku,
+          variantLabel: item.variant_label,
+          option1Name: item.option1_name,
+          option2Name: item.option2_name,
           brand: item.brand || item.product_brand || 'Richfem'
         });
       }
@@ -330,8 +414,8 @@ orders.get('/user', authMiddleware, async (c) => {
 
     const formattedOrders = (userOrders || []).map(order => {
       const createdAt = order.created_at;
-      const formattedDate = createdAt 
-        ? new Date(createdAt.replace(' ', 'T') + 'Z').toISOString() 
+      const formattedDate = createdAt
+        ? new Date(createdAt.replace(' ', 'T') + 'Z').toISOString()
         : null;
 
       return {
@@ -369,6 +453,20 @@ const cancelOrderHandler = async (c) => {
       return fail(c, 'Only pending, processing or confirmed orders can be cancelled.', 400);
     }
 
+    // ✅ Stock wapas karo
+    const { results: items } = await c.env.DB.prepare(
+      'SELECT * FROM order_items WHERE order_id = ?'
+    ).bind(id).all();
+
+    for (const item of items || []) {
+      if (item.variant_id) {
+        await c.env.DB.prepare('UPDATE product_variants SET stock = stock + ? WHERE id = ?')
+          .bind(item.quantity, item.variant_id).run();
+      }
+      await c.env.DB.prepare('UPDATE products SET stock = stock + ? WHERE id = ?')
+        .bind(item.quantity, item.product_id).run();
+    }
+
     await c.env.DB.prepare(
       `UPDATE orders SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?`
     ).bind(id).run();
@@ -386,7 +484,7 @@ orders.patch('/:id/cancel', authMiddleware, cancelOrderHandler);
 /* Admin                                                                 */
 /* --------------------------------------------------------------------- */
 
-// ✅ GET /api/orders/all - FIXED with pagination + specific columns
+// GET /api/orders/all
 orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   try {
     const url = new URL(c.req.url);
@@ -405,7 +503,7 @@ orders.get('/all', authMiddleware, requireAdmin, async (c) => {
     if (ordersList && ordersList.length > 0) {
       const orderIds = ordersList.map(o => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
-      
+
       const { results: allItems } = await c.env.DB.prepare(
         `SELECT oi.*, p.brand as product_brand FROM order_items oi LEFT JOIN products p ON oi.product_id = p.id WHERE oi.order_id IN (${placeholders})`
       ).bind(...orderIds).all();
@@ -414,6 +512,11 @@ orders.get('/all', authMiddleware, requireAdmin, async (c) => {
       for (const item of allItems || []) {
         (itemsMap[item.order_id] ||= []).push({
           ...item,
+          variantId: item.variant_id,
+          variantSku: item.variant_sku,
+          variantLabel: item.variant_label,
+          option1Name: item.option1_name,
+          option2Name: item.option2_name,
           brand: item.brand || item.product_brand || 'Richfem'
         });
       }
@@ -441,12 +544,17 @@ orders.get('/:id', authMiddleware, async (c) => {
       return fail(c, 'You do not have access to this order.', 403);
     }
 
-    const { results: items } = await c.env.DB.prepare('SELECT oi.*, p.brand as product_brand FROM order_items oi LEFT JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?')
-      .bind(id)
-      .all();
+    const { results: items } = await c.env.DB.prepare(
+      `SELECT oi.*, p.brand as product_brand FROM order_items oi LEFT JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?`
+    ).bind(id).all();
 
     const formattedItems = (items || []).map(i => ({
       ...i,
+      variantId: i.variant_id,
+      variantSku: i.variant_sku,
+      variantLabel: i.variant_label,
+      option1Name: i.option1_name,
+      option2Name: i.option2_name,
       brand: i.brand || i.product_brand || 'Richfem'
     }));
 
@@ -461,7 +569,7 @@ orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
     const body = await c.req.json().catch(() => ({}));
-    
+
     const existing = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
     if (!existing) return fail(c, 'Order not found.', 404);
 
@@ -481,7 +589,7 @@ orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// PUT/PATCH /api/orders/:id/status - Status Update Handler
+// PUT/PATCH /api/orders/:id/status
 const updateStatusHandler = async (c) => {
   try {
     const id = c.req.param('id');
