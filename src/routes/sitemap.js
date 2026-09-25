@@ -8,36 +8,20 @@ sitemap.get('/sitemap.xml', async (c) => {
     const baseUrl = 'https://www.mypinkshop.com';
     const today = new Date().toISOString().split('T')[0];
 
-    // ✅ Categories fetch karo
+    // ✅ Categories — sirf slug fetch karo
     const { results: categories } = await c.env.DB.prepare(
-      `SELECT slug, updated_at FROM categories WHERE status = 'active' ORDER BY "order" ASC`
+      `SELECT slug FROM categories WHERE status = 'active' ORDER BY "order" ASC`
     ).all();
 
-    // ✅ Products fetch karo
+    // ✅ Products — sirf id fetch karo
     const { results: products } = await c.env.DB.prepare(
-      `SELECT id, updated_at FROM products WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1000`
+      `SELECT id FROM products WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1000`
     ).all();
 
     let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-
-  <!-- Homepage -->
-  <url>
-    <loc>${baseUrl}/</loc>
-    <lastmod>${today}</lastmod>
-    <changefreq>daily</changefreq>
-    <priority>1.0</priority>
-  </url>
-
-  <!-- Shop -->
-  <url>
-    <loc>${baseUrl}/shop</loc>
-    <lastmod>${today}</lastmod>
-    <changefreq>daily</changefreq>
-    <priority>0.9</priority>
-  </url>
-
-  <!-- Static Pages -->
+  <url><loc>${baseUrl}/</loc><lastmod>${today}</lastmod><priority>1.0</priority></url>
+  <url><loc>${baseUrl}/shop</loc><lastmod>${today}</lastmod><priority>0.9</priority></url>
   <url><loc>${baseUrl}/contact</loc><priority>0.5</priority></url>
   <url><loc>${baseUrl}/faqs</loc><priority>0.5</priority></url>
   <url><loc>${baseUrl}/shipping-info</loc><priority>0.4</priority></url>
@@ -50,13 +34,7 @@ sitemap.get('/sitemap.xml', async (c) => {
     if (categories && categories.length > 0) {
       xml += `\n  <!-- Categories -->\n`;
       categories.forEach(cat => {
-        const lastmod = cat.updated_at ? cat.updated_at.split(' ')[0] : today;
-        xml += `  <url>
-    <loc>${baseUrl}/category/${cat.slug}</loc>
-    <lastmod>${lastmod}</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
-  </url>\n`;
+        xml += `  <url><loc>${baseUrl}/category/${cat.slug}</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>\n`;
       });
     }
 
@@ -64,13 +42,7 @@ sitemap.get('/sitemap.xml', async (c) => {
     if (products && products.length > 0) {
       xml += `\n  <!-- Products -->\n`;
       products.forEach(prod => {
-        const lastmod = prod.updated_at ? prod.updated_at.split(' ')[0] : today;
-        xml += `  <url>
-    <loc>${baseUrl}/product/${prod.id}</loc>
-    <lastmod>${lastmod}</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.7</priority>
-  </url>\n`;
+        xml += `  <url><loc>${baseUrl}/product/${prod.id}</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq><priority>0.7</priority></url>\n`;
       });
     }
 
