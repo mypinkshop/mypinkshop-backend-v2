@@ -195,7 +195,6 @@ async function serializeProductWithVariants(db, row, includeInactive = false) {
       isActive: !!v.is_active,
     }));
 
-    // ✅ Unique colors & sizes for filters/swatches
     base.availableColors = [...new Set(
       base.variants.map(v => v.option2.value).filter(Boolean)
     )];
@@ -203,7 +202,6 @@ async function serializeProductWithVariants(db, row, includeInactive = false) {
       base.variants.map(v => v.option1.value).filter(Boolean)
     )];
 
-    // ✅ Price range
     if (base.variants.length > 0) {
       const prices = base.variants.map(v => Number(v.price) || 0).filter(p => p > 0);
       if (prices.length > 0) {
@@ -326,7 +324,6 @@ products.get('/', async (c) => {
     const countRow = await c.env.DB.prepare(countQuery).bind(...bindings).first();
     const total = countRow?.total || 0;
 
-    // ✅ Variants attach karo (listing me bhi colors/sizes/price range chahiye)
     const serialized = await Promise.all(
       (results || []).map(row => serializeProductWithVariants(c.env.DB, row))
     );
@@ -382,6 +379,7 @@ products.get('/:id/variants', async (c) => {
 
 // ============================================================
 // POST /api/products/create
+// ✅ FIXED: bindValues count 44 (rating/review_count hardcoded in SQL)
 // ============================================================
 products.post('/create', authMiddleware, requireAdmin, async (c) => {
   try {
@@ -456,36 +454,59 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
 
     const hasVars = hasVariations || (Array.isArray(variants) && variants.length > 0);
 
+    // ✅ FIXED: 44 bind values (rating/review_count SQL mein hardcoded hain)
     const bindValues = [
+      // 1-3
       id, vendorId, vendorName,
+      // 4-5
       toSafeString(name), toSafeString(brand),
+      // 6-7
       toSafeString(mainCategory), toSafeString(subCategory),
+      // 8
       toSafeString(slug),
+      // 9
       toSafeString(Array.isArray(description) ? description.join('\n') : description),
+      // 10-11
       toSafeJsonString(description), toSafeJsonString(keyFeatures),
+      // 12-13
       toSafeJsonObjectString(productDetails), toSafeString(shortDescription),
+      // 14-15
       parseFloat(price) || 0, parseFloat(originalPrice) || 0,
+      // 16-17
       parseFloat(discountPercent) || 0, parseFloat(tax) || 18,
+      // 18-19
       parseInt(stock, 10) || 10, toSafeString(sku),
+      // 20-21
       toSafeString(weight), toSafeString(dimensions),
+      // 22-23
       toSafeJsonString(images), toSafeString(skinType),
+      // 24-25
       toSafeJsonString(concerns), toSafeString(ingredients),
+      // 26-28
       toSafeString(finish), toSafeString(coverage), toSafeString(shade),
+      // 29-30
       toSafeString(hairType), toSafeJsonString(hairConcerns),
+      // 31-33
       toSafeString(fabric), toSafeString(material), toSafeString(gender),
+      // 34-35
       toSafeJsonString(variations), hasVars ? 1 : 0,
+      // 36-37
       toSafeString(option1Name), toSafeString(option2Name),
+      // 38-39
       toSafeString(metaTitle), toSafeString(metaDescription),
+      // 40-41
       toSafeString(metaKeywords), toSafeString(slug || id),
+      // 42-44
       isActive ? 1 : 0, isFeatured ? 1 : 0,
       adminApproved ? 1 : 0
     ];
 
-    // ⚠️ NOTE: bind count = 46 (option1_name aur option2_name add hue)
-    if (bindValues.length !== 46) {
-      return fail(c, `Internal error: expected 46 bind values, got ${bindValues.length}`, 500);
+    // ✅ FIXED: 44 values (not 46)
+    if (bindValues.length !== 44) {
+      return fail(c, `Internal error: expected 44 bind values, got ${bindValues.length}`, 500);
     }
 
+    // ✅ INSERT — rating aur review_count SQL mein hardcoded (4.8, 0)
     await c.env.DB.prepare(
       `INSERT INTO products
         (id, vendor_id, vendor_name, name, brand, main_category, sub_category, category_slug,
@@ -622,7 +643,6 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
     // ✅ Replace variants ONLY if body.variants provided
     if (Array.isArray(body.variants)) {
       await replaceVariants(c.env.DB, id, body.variants, merged.option1_name, merged.option2_name);
-      // update has_variations flag
       await c.env.DB.prepare(
         `UPDATE products SET has_variations = ? WHERE id = ?`
       ).bind(body.variants.length > 0 ? 1 : 0, id).run();
@@ -672,7 +692,6 @@ products.delete('/:id', authMiddleware, requireAdmin, async (c) => {
     const existing = await c.env.DB.prepare('SELECT id FROM products WHERE id = ?').bind(id).first();
     if (!existing) return fail(c, 'Product not found.', 404);
 
-    // ✅ Manual cascade (D1 me FK enforce nahi hoti)
     try { await c.env.DB.prepare('DELETE FROM product_variants WHERE product_id = ?').bind(id).run(); } catch (e) {}
     try { await c.env.DB.prepare('DELETE FROM cart WHERE product_id = ?').bind(id).run(); } catch (e) {}
     try { await c.env.DB.prepare('DELETE FROM wishlist WHERE product_id = ?').bind(id).run(); } catch (e) {}
