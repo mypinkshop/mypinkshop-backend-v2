@@ -84,6 +84,10 @@ app.get('/', (c) =>
   })
 );
 
+app.get('/favicon.ico', (c) => {
+  return c.redirect('https://www.mypinkshop.com/favicon.ico', 301);
+});
+
 // ✅ Updated health check with D1 database connection check
 app.get('/api/health', async (c) => {
   try {
