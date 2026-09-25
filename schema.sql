@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
   id            TEXT PRIMARY KEY,
   name          TEXT NOT NULL,
   email         TEXT NOT NULL UNIQUE,
-  password      TEXT NOT NULL,               -- "pbkdf2$<iterations>$<saltHex>$<hashHex>"
+  password      TEXT NOT NULL,
   phone         TEXT,
   role          TEXT NOT NULL DEFAULT 'customer' CHECK (role IN ('customer', 'admin', 'vendor')),
   avatar        TEXT,
@@ -24,6 +24,31 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_role  ON users(role);
+
+/* ----------------------------------------------------------------------- */
+/* categories  ✅ NEW                                                         */
+/* ----------------------------------------------------------------------- */
+CREATE TABLE IF NOT EXISTS categories (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  slug          TEXT NOT NULL,
+  icon          TEXT DEFAULT '📁',
+  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+  "order"       INTEGER DEFAULT 0,
+  description   TEXT DEFAULT '',
+  type          TEXT NOT NULL DEFAULT 'main' CHECK (type IN ('main', 'sub')),
+  parent_id     TEXT DEFAULT NULL,
+  image         TEXT DEFAULT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (parent_id) REFERENCES categories(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_categories_type      ON categories(type);
+CREATE INDEX IF NOT EXISTS idx_categories_parent    ON categories(parent_id);
+CREATE INDEX IF NOT EXISTS idx_categories_status    ON categories(status);
+CREATE INDEX IF NOT EXISTS idx_categories_slug      ON categories(slug);
+CREATE INDEX IF NOT EXISTS idx_categories_order     ON categories("order");
 
 /* ----------------------------------------------------------------------- */
 /* products                                                                  */
@@ -41,7 +66,7 @@ CREATE TABLE IF NOT EXISTS products (
   category_slug      TEXT DEFAULT '',
 
   description        TEXT DEFAULT '',
-  about_this_item    TEXT DEFAULT '[]',      -- JSON array (stringified)
+  about_this_item    TEXT DEFAULT '[]',
 
   price              REAL NOT NULL,
   original_price     REAL DEFAULT 0,
@@ -53,13 +78,13 @@ CREATE TABLE IF NOT EXISTS products (
   weight             TEXT DEFAULT '',
   dimensions         TEXT DEFAULT '',
 
-  images             TEXT DEFAULT '[]',      -- JSON array of URLs (stringified)
+  images             TEXT DEFAULT '[]',
 
   rating             REAL DEFAULT 0,
   review_count       INTEGER DEFAULT 0,
 
-  is_active          INTEGER NOT NULL DEFAULT 1,   -- 0/1 boolean
-  is_featured        INTEGER NOT NULL DEFAULT 0,   -- 0/1 boolean
+  is_active          INTEGER NOT NULL DEFAULT 1,
+  is_featured        INTEGER NOT NULL DEFAULT 0,
 
   created_at         TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
@@ -154,7 +179,7 @@ CREATE TABLE IF NOT EXISTS orders (
                        CHECK (payment_status IN ('pending', 'paid', 'failed', 'refunded')),
   payment_method    TEXT DEFAULT 'cod',
   payment_id        TEXT,
-  shipping_address  TEXT NOT NULL DEFAULT '{}',  -- JSON (stringified)
+  shipping_address  TEXT NOT NULL DEFAULT '{}',
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -304,7 +329,7 @@ CREATE TABLE IF NOT EXISTS user_addresses (
 CREATE INDEX IF NOT EXISTS idx_user_addresses_user_id ON user_addresses(user_id);
 
 /* ----------------------------------------------------------------------- */
-/* user_cards (only last4 is ever stored - never raw card numbers/CVV)       */
+/* user_cards                                                                 */
 /* ----------------------------------------------------------------------- */
 CREATE TABLE IF NOT EXISTS user_cards (
   id                  TEXT PRIMARY KEY,
@@ -365,8 +390,7 @@ CREATE TABLE IF NOT EXISTS wishlist (
 CREATE INDEX IF NOT EXISTS idx_wishlist_user_id ON wishlist(user_id);
 
 /* ----------------------------------------------------------------------- */
-/* Seed data (safe to remove) - lets the public endpoints return content   */
-/* immediately after the schema is applied, so you can verify deployment. */
+/* Seed data                                                                  */
 /* ----------------------------------------------------------------------- */
 
 INSERT OR IGNORE INTO offers (id, title, description, is_active, type, discount_type, discount_value, min_order_value)
