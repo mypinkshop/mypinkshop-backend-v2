@@ -105,7 +105,7 @@ async function ensureCategory(db, name, type = 'main', parentId = null) {
 }
 
 // ============================================================
-// SERIALIZE PRODUCT (basic)
+// SERIALIZE PRODUCT
 // ============================================================
 function serializeProduct(row) {
   if (!row) return null;
@@ -162,7 +162,7 @@ function serializeProduct(row) {
 }
 
 // ============================================================
-// SERIALIZE PRODUCT + VARIANTS (with fallback image)
+// SERIALIZE PRODUCT + VARIANTS
 // ============================================================
 async function serializeProductWithVariants(db, row, includeInactive = false) {
   const base = serializeProduct(row);
@@ -222,7 +222,7 @@ async function serializeProductWithVariants(db, row, includeInactive = false) {
 }
 
 // ============================================================
-// SAVE VARIANTS (insert)
+// SAVE VARIANTS
 // ============================================================
 async function saveVariants(db, productId, variants, option1Name = 'Size', option2Name = 'Color') {
   if (!Array.isArray(variants) || variants.length === 0) return;
@@ -256,7 +256,7 @@ async function saveVariants(db, productId, variants, option1Name = 'Size', optio
 }
 
 // ============================================================
-// REPLACE VARIANTS (delete all + insert new)
+// REPLACE VARIANTS
 // ============================================================
 async function replaceVariants(db, productId, variants, option1Name = 'Size', option2Name = 'Color') {
   await db.prepare('DELETE FROM product_variants WHERE product_id = ?').bind(productId).run();
@@ -264,7 +264,7 @@ async function replaceVariants(db, productId, variants, option1Name = 'Size', op
 }
 
 // ============================================================
-// GET /api/products  (listing)
+// GET /api/products
 // ============================================================
 products.get('/', async (c) => {
   try {
@@ -379,7 +379,7 @@ products.get('/:id/variants', async (c) => {
 
 // ============================================================
 // POST /api/products/create
-// ✅ FIXED: bindValues count 44 (rating/review_count hardcoded in SQL)
+// ✅ FIXED: 48 columns, 48 values (44 placeholders + 4 hardcoded)
 // ============================================================
 products.post('/create', authMiddleware, requireAdmin, async (c) => {
   try {
@@ -443,7 +443,7 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       }
     }
 
-    // ✅ AUTO-CREATE CATEGORIES
+    // AUTO-CREATE CATEGORIES
     let mainCatId = null;
     if (mainCategory && mainCategory.trim()) {
       mainCatId = await ensureCategory(c.env.DB, mainCategory, 'main');
@@ -454,59 +454,37 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
 
     const hasVars = hasVariations || (Array.isArray(variants) && variants.length > 0);
 
-    // ✅ FIXED: 44 bind values (rating/review_count SQL mein hardcoded hain)
+    // ✅ 44 bind values (slug bhi included, rating/review_count hardcoded)
     const bindValues = [
-      // 1-3
       id, vendorId, vendorName,
-      // 4-5
       toSafeString(name), toSafeString(brand),
-      // 6-7
       toSafeString(mainCategory), toSafeString(subCategory),
-      // 8
       toSafeString(slug),
-      // 9
       toSafeString(Array.isArray(description) ? description.join('\n') : description),
-      // 10-11
       toSafeJsonString(description), toSafeJsonString(keyFeatures),
-      // 12-13
       toSafeJsonObjectString(productDetails), toSafeString(shortDescription),
-      // 14-15
       parseFloat(price) || 0, parseFloat(originalPrice) || 0,
-      // 16-17
       parseFloat(discountPercent) || 0, parseFloat(tax) || 18,
-      // 18-19
       parseInt(stock, 10) || 10, toSafeString(sku),
-      // 20-21
       toSafeString(weight), toSafeString(dimensions),
-      // 22-23
       toSafeJsonString(images), toSafeString(skinType),
-      // 24-25
       toSafeJsonString(concerns), toSafeString(ingredients),
-      // 26-28
       toSafeString(finish), toSafeString(coverage), toSafeString(shade),
-      // 29-30
       toSafeString(hairType), toSafeJsonString(hairConcerns),
-      // 31-33
       toSafeString(fabric), toSafeString(material), toSafeString(gender),
-      // 34-35
       toSafeJsonString(variations), hasVars ? 1 : 0,
-      // 36-37
       toSafeString(option1Name), toSafeString(option2Name),
-      // 38-39
       toSafeString(metaTitle), toSafeString(metaDescription),
-      // 40-41
       toSafeString(metaKeywords), toSafeString(slug || id),
-      // 42-44
       isActive ? 1 : 0, isFeatured ? 1 : 0,
       adminApproved ? 1 : 0
     ];
 
-    // ✅ FIXED: 44 values (not 46)
     if (bindValues.length !== 44) {
       return fail(c, `Internal error: expected 44 bind values, got ${bindValues.length}`, 500);
     }
 
-    // ✅ INSERT — rating aur review_count SQL mein hardcoded (4.8, 0)
+    // ✅ 48 columns | 44 placeholders + 4 hardcoded (rating=4.8, review_count=0, created_at, updated_at)
     await c.env.DB.prepare(
       `INSERT INTO products
         (id, vendor_id, vendor_name, name, brand, main_category, sub_category, category_slug,
@@ -521,13 +499,13 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-               4.8, 0, ?, ?, ?,
+               ?, 4.8, 0, ?, ?, ?,
                datetime('now'), datetime('now'))`
     )
       .bind(...bindValues)
       .run();
 
-    // ✅ Save variants
+    // Save variants
     if (hasVars && Array.isArray(variants) && variants.length > 0) {
       await saveVariants(c.env.DB, id, variants, option1Name, option2Name);
     }
@@ -600,7 +578,6 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
       admin_approved: body.adminApproved !== undefined ? (body.adminApproved ? 1 : 0) : existing.admin_approved,
     };
 
-    // ✅ AUTO-CREATE CATEGORIES
     let mainCatId = null;
     if (merged.main_category && merged.main_category.trim()) {
       mainCatId = await ensureCategory(c.env.DB, merged.main_category, 'main');
@@ -640,7 +617,6 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
       )
       .run();
 
-    // ✅ Replace variants ONLY if body.variants provided
     if (Array.isArray(body.variants)) {
       await replaceVariants(c.env.DB, id, body.variants, merged.option1_name, merged.option2_name);
       await c.env.DB.prepare(
@@ -657,7 +633,7 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
 });
 
 // ============================================================
-// PUT /api/products/:id/variants  (replace only variants)
+// PUT /api/products/:id/variants
 // ============================================================
 products.put('/:id/variants', authMiddleware, requireAdmin, async (c) => {
   try {
