@@ -30,6 +30,8 @@ import reviewRoutes from './routes/reviews.js';
 import returnsRoutes from './routes/returns.js'; // ⬅️ NEW: return/refund requests
 import categoriesRouter from './routes/categories';
 import adminPaymentsRouter from './routes/adminPayments';
+import brands from './routes/brands.js';
+
 
 const app = new Hono();
 
@@ -132,6 +134,7 @@ app.route('/api/returns', returnsRoutes);
 app.route('/api/orders/returns', returnsRoutes);
 app.route('/api/categories', categoriesRouter);
 app.route('/api/admin', adminPaymentsRouter);
+app.route('/api/brands', brands);
 
 /* --------------------------------------------------------------------- */
 /* 404 + global error handling                                           */
