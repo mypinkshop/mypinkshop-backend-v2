@@ -10,6 +10,45 @@ const banners = new Hono();
 /* --------------------------------------------------------------------- */
 
 /**
+ * Safe JSON array parse
+ */
+function parseArray(val) {
+  if (!val) return [];
+  if (Array.isArray(val)) return val.filter(Boolean);
+  if (typeof val === 'string') {
+    try {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean);
+      // Purana single value — wrap into array
+      return val.trim() ? [val.trim()] : [];
+    } catch {
+      return val.trim() ? [val.trim()] : [];
+    }
+  }
+  return [];
+}
+
+/**
+ * Array → JSON string (DB me save karne ke liye)
+ */
+function toJsonArray(val) {
+  if (!val) return '[]';
+  if (Array.isArray(val)) return JSON.stringify(val.filter(Boolean));
+  if (typeof val === 'string') {
+    // Agar already JSON hai
+    if (val.trim().startsWith('[')) {
+      try {
+        JSON.parse(val);
+        return val;
+      } catch {}
+    }
+    // Single value — wrap
+    return JSON.stringify(val.trim() ? [val.trim()] : []);
+  }
+  return '[]';
+}
+
+/**
  * DB row → API response format
  */
 function formatBanner(b) {
@@ -37,8 +76,13 @@ function formatBanner(b) {
     order: b.sort_order ?? 0,
     active: b.active === 1,
     showTextOverlay: b.show_text_overlay !== 0,
-    category: b.category || null,
-    position: b.position || 'home_hero',
+    // ✅ Arrays
+    categories: parseArray(b.category),
+    positions: parseArray(b.position),
+    // Backward-compat single values (first item)
+    category: parseArray(b.category)[0] || null,
+    position: parseArray(b.position)[0] || 'home_hero',
+    // Display
     size: b.size || 'large',
     display_style: b.display_style || 'single',
     link_type: b.link_type || 'custom',
@@ -118,8 +162,40 @@ function intFromBody(val, defaultVal = 0) {
   return Number.isFinite(n) ? n : defaultVal;
 }
 
+/**
+ * FormData se array nikalo — multiple values support
+ */
+function arrayFromForm(body, key) {
+  const val = body[key];
+  if (val === undefined || val === null) return [];
+  
+  // FormData: multiple same-key values → array
+  if (Array.isArray(val)) {
+    return val.filter(Boolean);
+  }
+  
+  // Single string — JSON ho sakta hai ya plain value
+  if (typeof val === 'string') {
+    // JSON array string
+    if (val.trim().startsWith('[')) {
+      try {
+        const parsed = JSON.parse(val);
+        if (Array.isArray(parsed)) return parsed.filter(Boolean);
+      } catch {}
+    }
+    // Comma-separated
+    if (val.includes(',')) {
+      return val.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    // Single value
+    return val.trim() ? [val.trim()] : [];
+  }
+  
+  return [];
+}
+
 /* --------------------------------------------------------------------- */
-/* OPTIONS — saare dropdown options ek jagah (public)                    */
+/* OPTIONS                                                               */
 /* --------------------------------------------------------------------- */
 
 banners.get('/options', async (c) => {
@@ -157,7 +233,7 @@ banners.get('/options', async (c) => {
 });
 
 /* --------------------------------------------------------------------- */
-/* Public                                                                */
+/* PUBLIC — Active banners                                               */
 /* --------------------------------------------------------------------- */
 
 // GET /api/banners/active?category=electronics&position=category_hero
@@ -170,14 +246,26 @@ banners.get('/active', async (c) => {
     let query = 'SELECT * FROM banners WHERE active = 1';
     const bindings = [];
 
+    // ✅ Category filter — JSON array me check karo
     if (category) {
-      query += ' AND (category = ? OR category IS NULL)';
-      bindings.push(category);
+      query += ` AND (
+        category IS NULL 
+        OR category = '' 
+        OR category = '[]'
+        OR category LIKE ?
+      )`;
+      bindings.push(`%"${category}"%`);
     }
 
+    // ✅ Position filter — JSON array me check karo
     if (position) {
-      query += ' AND position = ?';
-      bindings.push(position);
+      query += ` AND (
+        position IS NULL 
+        OR position = '' 
+        OR position = '[]'
+        OR position LIKE ?
+      )`;
+      bindings.push(`%"${position}"%`);
     }
 
     query += ' ORDER BY sort_order ASC, created_at DESC';
@@ -203,13 +291,23 @@ banners.get('/', async (c) => {
     if (!all) query += ' AND active = 1';
 
     if (category) {
-      query += ' AND (category = ? OR category IS NULL)';
-      bindings.push(category);
+      query += ` AND (
+        category IS NULL 
+        OR category = '' 
+        OR category = '[]'
+        OR category LIKE ?
+      )`;
+      bindings.push(`%"${category}"%`);
     }
 
     if (position) {
-      query += ' AND position = ?';
-      bindings.push(position);
+      query += ` AND (
+        position IS NULL 
+        OR position = '' 
+        OR position = '[]'
+        OR position LIKE ?
+      )`;
+      bindings.push(`%"${position}"%`);
     }
 
     query += ' ORDER BY sort_order ASC, created_at DESC';
@@ -225,7 +323,6 @@ banners.get('/', async (c) => {
 /* Admin                                                                 */
 /* --------------------------------------------------------------------- */
 
-// GET /api/banners/all — saare (including inactive)
 banners.get('/all', authMiddleware, requireAdmin, async (c) => {
   try {
     const { results } = await c.env.DB.prepare(
@@ -253,8 +350,21 @@ async function createBanner(c) {
   const order = intFromBody(body.order, 0);
   const active = boolFromBody(body.active, true) ? 1 : 0;
 
-  const category = body.category || null;
-  const position = body.position || 'home_hero';
+  // ✅ Multi-select arrays
+  const categories = arrayFromForm(body, 'categories');
+  const positions = arrayFromForm(body, 'positions');
+
+  // Fallback: single value
+  if (categories.length === 0 && body.category) {
+    categories.push(body.category);
+  }
+  if (positions.length === 0 && body.position) {
+    positions.push(body.position);
+  }
+  if (positions.length === 0) {
+    positions.push('home_hero');
+  }
+
   const size = body.size || 'large';
   const display_style = body.display_style || 'single';
   const link_type = body.link_type || 'custom';
@@ -276,7 +386,10 @@ async function createBanner(c) {
     .bind(
       id, title, subtitle, buttonText, link,
       primaryImage, imagesJson, imageKey,
-      order, active, category, position, size, display_style, link_type,
+      order, active,
+      JSON.stringify(categories),  // ✅ Array
+      JSON.stringify(positions),   // ✅ Array
+      size, display_style, link_type,
       show_text_overlay
     )
     .run();
@@ -301,6 +414,18 @@ async function updateBanner(c) {
     primaryImage = newImageUrls[0];
   }
 
+  // ✅ Multi-select arrays
+  let categories = arrayFromForm(body, 'categories');
+  let positions = arrayFromForm(body, 'positions');
+
+  // Agar nahi aaye body me → existing rakho
+  if (categories.length === 0 && body.categories === undefined) {
+    categories = parseArray(existing.category);
+  }
+  if (positions.length === 0 && body.positions === undefined) {
+    positions = parseArray(existing.position);
+  }
+
   const merged = {
     title: body.title ?? existing.title,
     subtitle: body.subtitle ?? existing.subtitle,
@@ -311,8 +436,8 @@ async function updateBanner(c) {
     image_key: body.imageKey ?? existing.image_key,
     sort_order: body.order !== undefined ? intFromBody(body.order, existing.sort_order) : existing.sort_order,
     active: body.active !== undefined ? (boolFromBody(body.active, true) ? 1 : 0) : existing.active,
-    category: body.category !== undefined ? (body.category || null) : existing.category,
-    position: body.position !== undefined ? body.position : existing.position,
+    category: JSON.stringify(categories),
+    position: JSON.stringify(positions),
     size: body.size !== undefined ? body.size : (existing.size || 'large'),
     display_style: body.display_style !== undefined ? body.display_style : (existing.display_style || 'single'),
     link_type: body.link_type !== undefined ? body.link_type : (existing.link_type || 'custom'),
