@@ -18,6 +18,29 @@ const VALID_POSITIONS = [
 ];
 
 /* --------------------------------------------------------------------- */
+/* Helpers                                                                */
+/* --------------------------------------------------------------------- */
+
+// ✅ Position string ko parse karke array banao (single ya JSON array dono handle karo)
+function parsePositions(positionStr) {
+  if (!positionStr) return ['top_banner'];
+  try {
+    const parsed = JSON.parse(positionStr);
+    if (Array.isArray(parsed)) return parsed;
+    return [String(parsed)];
+  } catch (e) {
+    return [positionStr];
+  }
+}
+
+// ✅ Validate position (single ya JSON array dono)
+function isValidPosition(positionStr) {
+  if (!positionStr) return false;
+  const positions = parsePositions(positionStr);
+  return positions.every(p => VALID_POSITIONS.includes(p));
+}
+
+/* --------------------------------------------------------------------- */
 /* Public                                                                 */
 /* --------------------------------------------------------------------- */
 
@@ -37,8 +60,8 @@ offers.get('/active-offer', async (c) => {
     const bindings = [];
 
     if (category) {
-      query += ` AND (category = ? OR category IS NULL)`;
-      bindings.push(category);
+      query += ` AND (category = ? OR category IS NULL OR category LIKE ?)`;
+      bindings.push(category, `%${category}%`);
     } else {
       query += ` AND category IS NULL`;
     }
@@ -53,7 +76,7 @@ offers.get('/active-offer', async (c) => {
 });
 
 // GET /api/offers/active?category=electronics&position=category_top
-// Returns multiple active offers (category-wise + global)
+// ✅ Returns multiple active offers (category-wise + global) with JSON position support
 offers.get('/active', async (c) => {
   try {
     const url = new URL(c.req.url);
@@ -69,21 +92,27 @@ offers.get('/active', async (c) => {
     const bindings = [];
 
     if (category) {
-      query += ` AND (category = ? OR category IS NULL)`;
-      bindings.push(category);
+      // Category-specific + global (category NULL) + multi-category (JSON array)
+      query += ` AND (category = ? OR category IS NULL OR category LIKE ?)`;
+      bindings.push(category, `%${category}%`);
     } else {
       query += ` AND category IS NULL`;
-    }
-
-    if (position) {
-      query += ` AND position = ?`;
-      bindings.push(position);
     }
 
     query += ` ORDER BY priority DESC, created_at DESC`;
 
     const { results } = await c.env.DB.prepare(query).bind(...bindings).all();
-    return ok(c, results || []);
+
+    // ✅ Position filter in JavaScript (kyunki position JSON array ho sakti hai)
+    let filtered = results || [];
+    if (position) {
+      filtered = filtered.filter(o => {
+        const positions = parsePositions(o.position);
+        return positions.includes(position);
+      });
+    }
+
+    return ok(c, filtered);
   } catch (err) {
     return fail(c, `Failed to load active offers: ${err.message}`, 500);
   }
@@ -148,10 +177,10 @@ offers.post('/create', authMiddleware, requireAdmin, async (c) => {
       minOrderValue = 0,
       startDate = null,
       endDate = null,
-      category = null,                    // ✅ NAYA
-      position = 'top_banner',            // ✅ NAYA
-      icon = '🎉',                        // ✅ NAYA
-      priority = 0,                       // ✅ NAYA
+      category = null,
+      position = 'top_banner',
+      icon = '🎉',
+      priority = 0,
     } = body;
 
     if (!title || !description) {
@@ -163,8 +192,9 @@ offers.post('/create', authMiddleware, requireAdmin, async (c) => {
     if (!VALID_DISCOUNT_TYPES.includes(discountType)) {
       return fail(c, `discountType must be one of: ${VALID_DISCOUNT_TYPES.join(', ')}`, 400);
     }
-    if (!VALID_POSITIONS.includes(position)) {
-      return fail(c, `position must be one of: ${VALID_POSITIONS.join(', ')}`, 400);
+    // ✅ Position validation (single ya JSON array)
+    if (!isValidPosition(position)) {
+      return fail(c, `position must be one of: ${VALID_POSITIONS.join(', ')} (or JSON array of them)`, 400);
     }
 
     const id = genId('off');
@@ -219,11 +249,16 @@ offers.put('/update/:id', authMiddleware, requireAdmin, async (c) => {
       min_order_value: body.minOrderValue ?? existing.min_order_value,
       start_date: body.startDate ?? existing.start_date,
       end_date: body.endDate ?? existing.end_date,
-      category: body.category !== undefined ? (body.category || null) : existing.category,   // ✅ NAYA
-      position: body.position ?? existing.position ?? 'top_banner',                           // ✅ NAYA
-      icon: body.icon ?? existing.icon ?? '🎉',                                                // ✅ NAYA
-      priority: body.priority !== undefined ? parseInt(body.priority) : (existing.priority ?? 0), // ✅ NAYA
+      category: body.category !== undefined ? (body.category || null) : existing.category,
+      position: body.position ?? existing.position ?? 'top_banner',
+      icon: body.icon ?? existing.icon ?? '🎉',
+      priority: body.priority !== undefined ? parseInt(body.priority) : (existing.priority ?? 0),
     };
+
+    // ✅ Position validate
+    if (!isValidPosition(merged.position)) {
+      return fail(c, `position must be one of: ${VALID_POSITIONS.join(', ')} (or JSON array of them)`, 400);
+    }
 
     await c.env.DB.prepare(
       `UPDATE offers SET 
@@ -281,6 +316,10 @@ offers.put('/:id', authMiddleware, requireAdmin, async (c) => {
       icon: body.icon ?? existing.icon ?? '🎉',
       priority: body.priority !== undefined ? parseInt(body.priority) : (existing.priority ?? 0),
     };
+
+    if (!isValidPosition(merged.position)) {
+      return fail(c, `position must be one of: ${VALID_POSITIONS.join(', ')} (or JSON array of them)`, 400);
+    }
 
     await c.env.DB.prepare(
       `UPDATE offers SET 
