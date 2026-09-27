@@ -19,6 +19,42 @@ function slugify(str) {
 }
 
 /**
+ * ✅ SAFE BODY PARSER
+ * JSON aur FormData dono handle karta hai
+ * Ye `name is required` error fix karega
+ */
+async function parseBodySafe(c) {
+  try {
+    const contentType = c.req.header('content-type') || '';
+
+    // JSON body
+    if (contentType.includes('application/json')) {
+      const json = await c.req.json().catch(() => ({}));
+      return json || {};
+    }
+
+    // FormData / multipart
+    if (
+      contentType.includes('multipart/form-data') ||
+      contentType.includes('application/x-www-form-urlencoded')
+    ) {
+      const form = await c.req.parseBody().catch(() => ({}));
+      return form || {};
+    }
+
+    // Fallback: try JSON first, then FormData
+    try {
+      return await c.req.json();
+    } catch {
+      return await c.req.parseBody().catch(() => ({}));
+    }
+  } catch (err) {
+    console.error('parseBodySafe error:', err);
+    return {};
+  }
+}
+
+/**
  * JSON string parse karo safely
  */
 function parseJSON(str, fallback = []) {
@@ -32,6 +68,23 @@ function parseJSON(str, fallback = []) {
   }
 }
 
+/**
+ * ✅ SAFE BOOL — string ya boolean dono handle karo
+ */
+function safeBool(val, defaultVal = false) {
+  if (val === undefined || val === null || val === '') return defaultVal;
+  if (typeof val === 'boolean') return val;
+  return val === 'true' || val === '1' || val === 1;
+}
+
+/**
+ * ✅ SAFE INT
+ */
+function safeInt(val, defaultVal = 0) {
+  const n = parseInt(val);
+  return Number.isFinite(n) ? n : defaultVal;
+}
+
 function formatBrand(b) {
   return {
     _id: b.id,
@@ -42,11 +95,9 @@ function formatBrand(b) {
     banner: b.banner || '',
     description: b.description || '',
     tagline: b.tagline || '',
-    // ✅ NAYE FIELDS
     highlights: parseJSON(b.highlights, []),
     offers: parseJSON(b.offers, []),
     featured_products: parseJSON(b.featured_products, []),
-    // Display
     active: b.active === 1,
     is_featured: b.is_featured === 1,
     sort_order: b.sort_order ?? 0,
@@ -67,10 +118,6 @@ async function brandsTableExists(c) {
   }
 }
 
-/**
- * Check karo ki naye columns exist karte hain ya nahi
- * (purane DB me nahi honge)
- */
 async function hasNewColumns(c) {
   try {
     const { results } = await c.env.DB.prepare(`PRAGMA table_info(brands)`).all();
@@ -99,7 +146,6 @@ brands.get('/', async (c) => {
 
     const hasBrandsTable = await brandsTableExists(c);
 
-    // ================= Fallback: products se derive =================
     if (!hasBrandsTable) {
       let query = `
         SELECT brand AS name, COUNT(*) as product_count
@@ -136,7 +182,6 @@ brands.get('/', async (c) => {
       return ok(c, list);
     }
 
-    // ================= Main: brands table =================
     let query = `
       SELECT b.*, 
         (SELECT COUNT(*) FROM products p 
@@ -166,7 +211,7 @@ brands.get('/', async (c) => {
   }
 });
 
-// GET /api/brands/admin/all — saare brands (including inactive) — ADMIN
+// GET /api/brands/admin/all
 brands.get('/admin/all', authMiddleware, requireAdmin, async (c) => {
   try {
     const hasBrandsTable = await brandsTableExists(c);
@@ -187,7 +232,7 @@ brands.get('/admin/all', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// GET /api/brands/popular — Top 20
+// GET /api/brands/popular
 brands.get('/popular', async (c) => {
   try {
     const hasBrandsTable = await brandsTableExists(c);
@@ -226,7 +271,7 @@ brands.get('/popular', async (c) => {
   }
 });
 
-// GET /api/brands/:slug — brand detail
+// GET /api/brands/:slug
 brands.get('/:slug', async (c) => {
   try {
     const slug = c.req.param('slug');
@@ -279,7 +324,7 @@ brands.get('/:slug', async (c) => {
   }
 });
 
-// GET /api/brands/:slug/products?page=1&limit=20&sort=
+// GET /api/brands/:slug/products
 brands.get('/:slug/products', async (c) => {
   try {
     const slug = c.req.param('slug');
@@ -378,7 +423,7 @@ brands.get('/:slug/products', async (c) => {
 // POST /api/brands/ensure
 brands.post('/ensure', authMiddleware, async (c) => {
   try {
-    const body = await c.req.json().catch(() => ({}));
+    const body = await parseBodySafe(c);
     const { name } = body;
 
     if (!name || !name.trim()) return fail(c, 'Brand name is required', 400);
@@ -427,18 +472,25 @@ brands.post('/', authMiddleware, requireAdmin, async (c) => {
     const hasBrandsTable = await brandsTableExists(c);
     if (!hasBrandsTable) return fail(c, 'Brands table not set up yet', 500);
 
-    const body = await c.req.parseBody().catch(() => ({}));
-    const name = (body.name || '').trim();
-    if (!name) return fail(c, 'name is required', 400);
+    // ✅ JSON + FormData dono handle
+    const body = await parseBodySafe(c);
 
-    const slug = (body.slug || slugify(name)).trim().toLowerCase();
+    console.log('[Brand Create] Received body keys:', Object.keys(body));
+    console.log('[Brand Create] name:', body.name);
+
+    const name = (body.name || '').toString().trim();
+    if (!name) {
+      return fail(c, 'name is required (body me "name" field missing hai)', 400);
+    }
+
+    const slug = (body.slug || slugify(name)).toString().trim().toLowerCase();
     const description = body.description || '';
     const tagline = body.tagline || '';
-    const is_featured = body.is_featured === 'true' || body.is_featured === true ? 1 : 0;
-    const sort_order = parseInt(body.sort_order) || 0;
-    const active = body.active === 'false' || body.active === false ? 0 : 1;
+    const is_featured = safeBool(body.is_featured, false) ? 1 : 0;
+    const sort_order = safeInt(body.sort_order, 0);
+    const active = body.active !== undefined ? (safeBool(body.active, true) ? 1 : 0) : 1;
 
-    // ✅ NAYE FIELDS — JSON
+    // NAYE FIELDS
     const highlights = body.highlights
       ? (typeof body.highlights === 'string' ? body.highlights : JSON.stringify(body.highlights))
       : '[]';
@@ -451,13 +503,13 @@ brands.post('/', authMiddleware, requireAdmin, async (c) => {
           : JSON.stringify(body.featured_products))
       : '[]';
 
-    // Logo upload
+    // Logo
     let logo = typeof body.logo === 'string' ? body.logo : '';
     if (body.logo && typeof body.logo === 'object' && typeof body.logo.arrayBuffer === 'function') {
       logo = await fileToDataUrl(body.logo);
     }
 
-    // Banner upload
+    // Banner
     let banner = typeof body.banner === 'string' ? body.banner : '';
     if (body.banner && typeof body.banner === 'object' && typeof body.banner.arrayBuffer === 'function') {
       banner = await fileToDataUrl(body.banner);
@@ -467,11 +519,9 @@ brands.post('/', authMiddleware, requireAdmin, async (c) => {
     const dup = await c.env.DB.prepare(
       `SELECT id FROM brands WHERE slug = ? OR LOWER(name) = LOWER(?)`
     ).bind(slug, name).first();
-    if (dup) return fail(c, 'Brand already exists', 409);
+    if (dup) return fail(c, 'Brand already exists (same name ya slug)', 409);
 
     const id = genId('brand');
-
-    // Column existence check (purane DB me nahi honge)
     const cols = await hasNewColumns(c);
 
     let insertSql, bindings;
@@ -488,7 +538,6 @@ brands.post('/', authMiddleware, requireAdmin, async (c) => {
         active, is_featured, sort_order,
       ];
     } else {
-      // Fallback: sirf purane columns
       insertSql = `INSERT INTO brands 
         (id, name, slug, logo, banner, description, tagline,
          active, is_featured, sort_order, created_at, updated_at)
@@ -505,11 +554,11 @@ brands.post('/', authMiddleware, requireAdmin, async (c) => {
     return ok(c, formatBrand(created), undefined, 201);
   } catch (err) {
     console.error('Create brand error:', err);
-    return fail(c, err.message, 500);
+    return fail(c, `Failed to create brand: ${err.message}`, 500);
   }
 });
 
-// PUT /api/brands/:id — brand update
+// PUT /api/brands/:id
 brands.put('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const hasBrandsTable = await brandsTableExists(c);
@@ -519,7 +568,7 @@ brands.put('/:id', authMiddleware, requireAdmin, async (c) => {
     const existing = await c.env.DB.prepare('SELECT * FROM brands WHERE id = ?').bind(id).first();
     if (!existing) return fail(c, 'Brand not found', 404);
 
-    const body = await c.req.parseBody().catch(() => ({}));
+    const body = await parseBodySafe(c);
 
     let logo = existing.logo;
     if (body.logo && typeof body.logo === 'object' && typeof body.logo.arrayBuffer === 'function') {
@@ -535,7 +584,6 @@ brands.put('/:id', authMiddleware, requireAdmin, async (c) => {
       banner = body.banner;
     }
 
-    // ✅ NAYE FIELDS — merge
     const highlights = body.highlights !== undefined
       ? (typeof body.highlights === 'string' ? body.highlights : JSON.stringify(body.highlights))
       : (existing.highlights || '[]');
@@ -555,16 +603,13 @@ brands.put('/:id', authMiddleware, requireAdmin, async (c) => {
       banner,
       description: body.description ?? existing.description,
       tagline: body.tagline ?? existing.tagline,
-      active: body.active !== undefined
-        ? (body.active === 'false' || body.active === false ? 0 : 1)
-        : existing.active,
+      active: body.active !== undefined ? (safeBool(body.active, true) ? 1 : 0) : existing.active,
       is_featured: body.is_featured !== undefined
-        ? (body.is_featured === 'true' || body.is_featured === true ? 1 : 0)
+        ? (safeBool(body.is_featured, false) ? 1 : 0)
         : existing.is_featured,
-      sort_order: body.sort_order !== undefined ? parseInt(body.sort_order) : existing.sort_order,
+      sort_order: body.sort_order !== undefined ? safeInt(body.sort_order, existing.sort_order) : existing.sort_order,
     };
 
-    // Column existence check
     const cols = await hasNewColumns(c);
 
     if (cols.highlights && cols.offers && cols.featured_products) {
@@ -599,11 +644,11 @@ brands.put('/:id', authMiddleware, requireAdmin, async (c) => {
     return ok(c, formatBrand(updated));
   } catch (err) {
     console.error('Update brand error:', err);
-    return fail(c, err.message, 500);
+    return fail(c, `Failed to update brand: ${err.message}`, 500);
   }
 });
 
-// PATCH /api/brands/:id — quick toggle (active, is_featured)
+// PATCH /api/brands/:id — quick toggle
 brands.patch('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const hasBrandsTable = await brandsTableExists(c);
@@ -613,22 +658,22 @@ brands.patch('/:id', authMiddleware, requireAdmin, async (c) => {
     const existing = await c.env.DB.prepare('SELECT * FROM brands WHERE id = ?').bind(id).first();
     if (!existing) return fail(c, 'Brand not found', 404);
 
-    const body = await c.req.json().catch(() => ({}));
+    const body = await parseBodySafe(c);
 
     const updates = [];
     const bindings = [];
 
     if (body.active !== undefined) {
       updates.push('active = ?');
-      bindings.push(body.active === true || body.active === 1 || body.active === 'true' ? 1 : 0);
+      bindings.push(safeBool(body.active, false) ? 1 : 0);
     }
     if (body.is_featured !== undefined) {
       updates.push('is_featured = ?');
-      bindings.push(body.is_featured === true || body.is_featured === 1 || body.is_featured === 'true' ? 1 : 0);
+      bindings.push(safeBool(body.is_featured, false) ? 1 : 0);
     }
     if (body.sort_order !== undefined) {
       updates.push('sort_order = ?');
-      bindings.push(parseInt(body.sort_order) || 0);
+      bindings.push(safeInt(body.sort_order, 0));
     }
 
     if (updates.length === 0) return fail(c, 'No valid fields to update', 400);
