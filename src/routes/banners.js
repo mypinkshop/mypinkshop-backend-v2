@@ -340,9 +340,7 @@ banners.get('/all', authMiddleware, requireAdmin, async (c) => {
 
 async function createBanner(c) {
   const body = await c.req.parseBody().catch(() => ({}));
-  const title = body.title;
-  if (!title) return fail(c, 'title is required.', 400);
-
+  const title = (body.title && body.title.trim()) ? body.title.trim() : 'Untitled Banner';
   const subtitle = body.subtitle || '';
   const buttonText = body.buttonText || 'Shop Now';
   const link = body.link || '/shop';
