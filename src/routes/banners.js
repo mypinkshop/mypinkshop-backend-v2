@@ -57,6 +57,7 @@ function formatBanner(b) {
 
   const categories = parseArray(b.category);
   const positions = parseArray(b.position);
+  const subcategories = parseArray(b.subcategories);
 
   return {
     _id: b.id,
@@ -71,6 +72,7 @@ function formatBanner(b) {
     showTextOverlay: b.show_text_overlay === 1,
     categories,
     positions,
+    subcategories,                         // ✅ NEW
     // Backward compatibility
     category: categories[0] || null,
     position: positions[0] || 'home_hero',
@@ -150,11 +152,13 @@ function intFromBody(val, defaultVal = 0) {
 banners.get('/options', async (c) => {
   return ok(c, {
     sizes: [
-      { value: 'small',  label: 'Small',  hint: '300×200' },
-      { value: 'medium', label: 'Medium', hint: '600×300' },
-      { value: 'large',  label: 'Large',  hint: '1200×400' },
-      { value: 'xl',     label: 'XL',     hint: '1600×500' },
-      { value: 'full',   label: 'Full',   hint: '1920×600' },
+      { value: 'small',  label: 'Small',  hint: '300×200',   aspect: '3/2' },
+      { value: 'medium', label: 'Medium', hint: '600×300',   aspect: '2/1' },
+      { value: 'large',  label: 'Large',  hint: '1200×400',  aspect: '3/1' },
+      { value: 'xl',     label: 'XL',     hint: '1600×500',  aspect: '16/5' },
+      { value: 'full',   label: 'Full',   hint: '1920×600',  aspect: '16/5' },
+      { value: 'square', label: 'Square', hint: '500×500',   aspect: '1/1' },
+      { value: 'tall',   label: 'Tall',   hint: '400×800',   aspect: '1/2' },
     ],
     styles: [
       { value: 'single',  label: 'Single',  hint: 'One full-width banner' },
@@ -312,9 +316,10 @@ async function createBanner(c) {
   await c.env.DB.prepare(
     `INSERT INTO banners
       (id, title, subtitle, button_text, link, image, images, image_key,
-       sort_order, active, category, position, size, display_style, link_type,
+       sort_order, active, category, position, subcategories,
+       size, display_style, link_type,
        show_text_overlay, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
   )
     .bind(
       id, title, subtitle, buttonText, link,
@@ -322,6 +327,7 @@ async function createBanner(c) {
       order, active,
       JSON.stringify(categories),
       JSON.stringify(positions),
+      JSON.stringify(subcategories),
       size, display_style, link_type,
       show_text_overlay
     )
@@ -357,6 +363,9 @@ async function updateBanner(c) {
   if (positions.length === 0 && body.positions === undefined) {
     positions = parseArray(existing.position);
   }
+  if (subcategories.length === 0 && body.subcategories === undefined) {
+    subcategories = parseArray(existing.subcategories);
+  }
 
   const merged = {
     title: body.title !== undefined
@@ -372,6 +381,7 @@ async function updateBanner(c) {
     active: body.active !== undefined ? (boolFromBody(body.active, true) ? 1 : 0) : existing.active,
     category: JSON.stringify(categories),
     position: JSON.stringify(positions),
+    subcategories: JSON.stringify(subcategories),   // ✅ NEW
     size: body.size !== undefined ? body.size : (existing.size || 'large'),
     display_style: body.display_style !== undefined ? body.display_style : (existing.display_style || 'single'),
     link_type: body.link_type !== undefined ? body.link_type : (existing.link_type || 'custom'),
@@ -386,7 +396,8 @@ async function updateBanner(c) {
       title = ?, subtitle = ?, button_text = ?, link = ?,
       image = ?, images = ?, image_key = ?,
       sort_order = ?, active = ?,
-      category = ?, position = ?, size = ?, display_style = ?, link_type = ?,
+      category = ?, position = ?, subcategories = ?,
+      size = ?, display_style = ?, link_type = ?,
       show_text_overlay = ?
      WHERE id = ?`
   )
@@ -394,7 +405,8 @@ async function updateBanner(c) {
       merged.title, merged.subtitle, merged.button_text, merged.link,
       merged.image, merged.images, merged.image_key,
       merged.sort_order, merged.active,
-      merged.category, merged.position, merged.size, merged.display_style, merged.link_type,
+      merged.category, merged.position, merged.subcategories,
+      merged.size, merged.display_style, merged.link_type,
       merged.show_text_overlay,
       id
     )
