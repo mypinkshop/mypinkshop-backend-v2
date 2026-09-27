@@ -11,19 +11,15 @@ const banners = new Hono();
 
 /**
  * DB row → API response format
- * Frontend (BannerRenderer) ko ye fields chahiye:
- *   _id, id, title, subtitle, buttonText, link, images[], order, active,
- *   showTextOverlay, category, position, size, display_style, link_type
  */
 function formatBanner(b) {
-  // images: JSON array string ho sakta hai, ya single image fallback
   let images = [];
   if (b.images) {
     try {
       const parsed = typeof b.images === 'string' ? JSON.parse(b.images) : b.images;
       if (Array.isArray(parsed)) images = parsed.filter(Boolean);
     } catch {
-      // ignore — fallback below
+      // ignore
     }
   }
   if (images.length === 0 && b.image) {
@@ -51,11 +47,9 @@ function formatBanner(b) {
 }
 
 /**
- * Single file → base64 data URL (existing behaviour)
- * Multiple files → JSON array of base64 data URLs
+ * Single/multiple files → base64 data URLs
  */
 async function handleImageUpload(body) {
-  // Multiple images (naya)
   const rawImages = body.images;
   const uploadedFiles = Array.isArray(rawImages)
     ? rawImages
@@ -69,7 +63,6 @@ async function handleImageUpload(body) {
     if (file && typeof file === 'object' && typeof file.arrayBuffer === 'function') {
       try {
         const buffer = await file.arrayBuffer();
-        // Chunked base64 (large files ke liye safe)
         const bytes = new Uint8Array(buffer);
         let binary = '';
         const chunk = 0x8000;
@@ -84,7 +77,7 @@ async function handleImageUpload(body) {
     }
   }
 
-  // Fallback: single `image` field (string URL ya file)
+  // Fallback: single `image` field
   if (urls.length === 0 && body.image) {
     if (typeof body.image === 'string') {
       urls.push(body.image);
@@ -109,7 +102,7 @@ async function handleImageUpload(body) {
 }
 
 /**
- * Body se field safely nikalo — FormData (strings) aur JSON dono handle karo
+ * Safe boolean from body
  */
 function boolFromBody(val, defaultVal = false) {
   if (val === undefined || val === null || val === '') return defaultVal;
@@ -117,10 +110,51 @@ function boolFromBody(val, defaultVal = false) {
   return val === 'true' || val === '1' || val === 1;
 }
 
+/**
+ * Safe int from body
+ */
 function intFromBody(val, defaultVal = 0) {
   const n = parseInt(val);
   return Number.isFinite(n) ? n : defaultVal;
 }
+
+/* --------------------------------------------------------------------- */
+/* OPTIONS — saare dropdown options ek jagah (public)                    */
+/* --------------------------------------------------------------------- */
+
+banners.get('/options', async (c) => {
+  return ok(c, {
+    sizes: [
+      { value: 'small',  label: 'Small',  hint: '300×200' },
+      { value: 'medium', label: 'Medium', hint: '600×300' },
+      { value: 'large',  label: 'Large',  hint: '1200×400' },
+      { value: 'xl',     label: 'XL',     hint: '1600×500' },
+      { value: 'full',   label: 'Full',   hint: '1920×600' },
+    ],
+    styles: [
+      { value: 'single',  label: 'Single',  hint: 'Ek banner full width' },
+      { value: 'slide',   label: 'Slide',   hint: 'Multiple rotate' },
+      { value: 'split',   label: 'Split',   hint: 'Text left + Image right' },
+      { value: 'overlay', label: 'Overlay', hint: 'Image pe text' },
+      { value: 'grid',    label: 'Grid',    hint: '2-4 side by side' },
+    ],
+    positions: [
+      { value: 'home_hero',       label: '🏠 Home Hero',       size: 'full',  style: 'slide',   px: '1920×600', ratio: '16:5' },
+      { value: 'category_hero',   label: '🎯 Category Hero',   size: 'xl',    style: 'single',  px: '1600×500', ratio: '16:5' },
+      { value: 'category_mid_1',  label: '📢 Mid 1',           size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
+      { value: 'category_mid_2',  label: '📢 Mid 2',           size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
+      { value: 'category_mid_3',  label: '📢 Mid 3',           size: 'large', style: 'slide',   px: '1200×400', ratio: '3:1' },
+      { value: 'category_bottom', label: '⬇️ Bottom',           size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+    ],
+    link_types: [
+      { value: 'category',    label: '📂 Category' },
+      { value: 'subcategory', label: '📁 Subcategory' },
+      { value: 'brand',       label: '🏷️ Brand' },
+      { value: 'product',     label: '🛍️ Specific Product' },
+      { value: 'custom',      label: '🔗 Custom URL' },
+    ],
+  });
+});
 
 /* --------------------------------------------------------------------- */
 /* Public                                                                */
@@ -219,7 +253,6 @@ async function createBanner(c) {
   const order = intFromBody(body.order, 0);
   const active = boolFromBody(body.active, true) ? 1 : 0;
 
-  // Naye fields
   const category = body.category || null;
   const position = body.position || 'home_hero';
   const size = body.size || 'large';
@@ -227,7 +260,6 @@ async function createBanner(c) {
   const link_type = body.link_type || 'custom';
   const show_text_overlay = boolFromBody(body.showTextOverlay, true) ? 1 : 0;
 
-  // Images
   const imageUrls = await handleImageUpload(body);
   const imagesJson = JSON.stringify(imageUrls);
   const primaryImage = imageUrls[0] || '';
@@ -261,7 +293,6 @@ async function updateBanner(c) {
   const body = await c.req.parseBody().catch(() => ({}));
   const newImageUrls = await handleImageUpload(body);
 
-  // Images merge: agar nayi upload hui → replace, warna existing rakho
   let imagesJson = existing.images || '[]';
   let primaryImage = existing.image || '';
 
