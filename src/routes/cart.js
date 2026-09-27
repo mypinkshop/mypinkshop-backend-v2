@@ -158,4 +158,61 @@ cart.delete('/clear', async (c) => {
   }
 });
 
+// ✅ POST /api/cart/merge
+// Guest cart (localStorage) ko user cart me merge karo
+cart.post('/merge', async (c) => {
+  try {
+    const user = c.get('user');
+    const body = await c.req.json().catch(() => ({}));
+    const { items } = body;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return ok(c, { merged: 0, message: 'No items to merge' });
+    }
+
+    let mergedCount = 0;
+
+    for (const item of items) {
+      const { productId, quantity } = item || {};
+      if (!productId || !quantity || quantity < 1) continue;
+
+      // Product exist karta hai?
+      const product = await c.env.DB.prepare('SELECT id FROM products WHERE id = ?')
+        .bind(productId)
+        .first();
+      if (!product) continue;
+
+      // Already user cart me hai?
+      const existing = await c.env.DB.prepare(
+        'SELECT * FROM cart WHERE user_id = ? AND product_id = ?'
+      )
+        .bind(user.id, productId)
+        .first();
+
+      if (existing) {
+        await c.env.DB.prepare(
+          `UPDATE cart SET quantity = quantity + ?, updated_at = datetime('now')
+           WHERE user_id = ? AND product_id = ?`
+        )
+          .bind(quantity, user.id, productId)
+          .run();
+      } else {
+        const id = genId('cart');
+        await c.env.DB.prepare(
+          `INSERT INTO cart (id, user_id, product_id, quantity, created_at, updated_at)
+           VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))`
+        )
+          .bind(id, user.id, productId, quantity)
+          .run();
+      }
+
+      mergedCount++;
+    }
+
+    return ok(c, { merged: mergedCount });
+  } catch (err) {
+    return fail(c, `Failed to merge cart: ${err.message}`, 500);
+  }
+});
+
 export default cart;
