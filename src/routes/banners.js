@@ -9,9 +9,6 @@ const banners = new Hono();
 /* Helpers                                                               */
 /* --------------------------------------------------------------------- */
 
-/**
- * Safe JSON array parse
- */
 function parseArray(val) {
   if (!val) return [];
   if (Array.isArray(val)) return val.filter(Boolean);
@@ -19,7 +16,6 @@ function parseArray(val) {
     try {
       const parsed = JSON.parse(val);
       if (Array.isArray(parsed)) return parsed.filter(Boolean);
-      // Purana single value — wrap into array
       return val.trim() ? [val.trim()] : [];
     } catch {
       return val.trim() ? [val.trim()] : [];
@@ -28,42 +24,39 @@ function parseArray(val) {
   return [];
 }
 
-/**
- * Array → JSON string (DB me save karne ke liye)
- */
-function toJsonArray(val) {
-  if (!val) return '[]';
-  if (Array.isArray(val)) return JSON.stringify(val.filter(Boolean));
+function parseJSONArrayFromForm(body, key) {
+  const val = body[key];
+  if (val === undefined || val === null) return [];
+  if (Array.isArray(val)) return val.filter(Boolean);
   if (typeof val === 'string') {
-    // Agar already JSON hai
     if (val.trim().startsWith('[')) {
       try {
-        JSON.parse(val);
-        return val;
+        const parsed = JSON.parse(val);
+        if (Array.isArray(parsed)) return parsed.filter(Boolean);
       } catch {}
     }
-    // Single value — wrap
-    return JSON.stringify(val.trim() ? [val.trim()] : []);
+    if (val.includes(',')) {
+      return val.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    return val.trim() ? [val.trim()] : [];
   }
-  return '[]';
+  return [];
 }
 
-/**
- * DB row → API response format
- */
 function formatBanner(b) {
   let images = [];
   if (b.images) {
     try {
       const parsed = typeof b.images === 'string' ? JSON.parse(b.images) : b.images;
       if (Array.isArray(parsed)) images = parsed.filter(Boolean);
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
   if (images.length === 0 && b.image) {
     images = [b.image];
   }
+
+  const categories = parseArray(b.category);
+  const positions = parseArray(b.position);
 
   return {
     _id: b.id,
@@ -75,14 +68,12 @@ function formatBanner(b) {
     images,
     order: b.sort_order ?? 0,
     active: b.active === 1,
-    showTextOverlay: b.show_text_overlay !== 0,
-    // ✅ Arrays
-    categories: parseArray(b.category),
-    positions: parseArray(b.position),
-    // Backward-compat single values (first item)
-    category: parseArray(b.category)[0] || null,
-    position: parseArray(b.position)[0] || 'home_hero',
-    // Display
+    showTextOverlay: b.show_text_overlay === 1,
+    categories,
+    positions,
+    // Backward compatibility
+    category: categories[0] || null,
+    position: positions[0] || 'home_hero',
     size: b.size || 'large',
     display_style: b.display_style || 'single',
     link_type: b.link_type || 'custom',
@@ -90,9 +81,6 @@ function formatBanner(b) {
   };
 }
 
-/**
- * Single/multiple files → base64 data URLs
- */
 async function handleImageUpload(body) {
   const rawImages = body.images;
   const uploadedFiles = Array.isArray(rawImages)
@@ -121,7 +109,6 @@ async function handleImageUpload(body) {
     }
   }
 
-  // Fallback: single `image` field
   if (urls.length === 0 && body.image) {
     if (typeof body.image === 'string') {
       urls.push(body.image);
@@ -145,53 +132,15 @@ async function handleImageUpload(body) {
   return urls;
 }
 
-/**
- * Safe boolean from body
- */
 function boolFromBody(val, defaultVal = false) {
   if (val === undefined || val === null || val === '') return defaultVal;
   if (typeof val === 'boolean') return val;
   return val === 'true' || val === '1' || val === 1;
 }
 
-/**
- * Safe int from body
- */
 function intFromBody(val, defaultVal = 0) {
   const n = parseInt(val);
   return Number.isFinite(n) ? n : defaultVal;
-}
-
-/**
- * FormData se array nikalo — multiple values support
- */
-function arrayFromForm(body, key) {
-  const val = body[key];
-  if (val === undefined || val === null) return [];
-  
-  // FormData: multiple same-key values → array
-  if (Array.isArray(val)) {
-    return val.filter(Boolean);
-  }
-  
-  // Single string — JSON ho sakta hai ya plain value
-  if (typeof val === 'string') {
-    // JSON array string
-    if (val.trim().startsWith('[')) {
-      try {
-        const parsed = JSON.parse(val);
-        if (Array.isArray(parsed)) return parsed.filter(Boolean);
-      } catch {}
-    }
-    // Comma-separated
-    if (val.includes(',')) {
-      return val.split(',').map((s) => s.trim()).filter(Boolean);
-    }
-    // Single value
-    return val.trim() ? [val.trim()] : [];
-  }
-  
-  return [];
 }
 
 /* --------------------------------------------------------------------- */
@@ -208,35 +157,34 @@ banners.get('/options', async (c) => {
       { value: 'full',   label: 'Full',   hint: '1920×600' },
     ],
     styles: [
-      { value: 'single',  label: 'Single',  hint: 'Ek banner full width' },
-      { value: 'slide',   label: 'Slide',   hint: 'Multiple rotate' },
-      { value: 'split',   label: 'Split',   hint: 'Text left + Image right' },
-      { value: 'overlay', label: 'Overlay', hint: 'Image pe text' },
-      { value: 'grid',    label: 'Grid',    hint: '2-4 side by side' },
+      { value: 'single',  label: 'Single',  hint: 'One full-width banner' },
+      { value: 'slide',   label: 'Slide',   hint: 'Multiple rotating' },
+      { value: 'split',   label: 'Split',   hint: 'Text + image' },
+      { value: 'overlay', label: 'Overlay', hint: 'Text on image' },
+      { value: 'grid',    label: 'Grid',    hint: '2–4 side by side' },
     ],
     positions: [
-      { value: 'home_hero',       label: '🏠 Home Hero',       size: 'full',  style: 'slide',   px: '1920×600', ratio: '16:5' },
-      { value: 'category_hero',   label: '🎯 Category Hero',   size: 'xl',    style: 'single',  px: '1600×500', ratio: '16:5' },
-      { value: 'category_mid_1',  label: '📢 Mid 1',           size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
-      { value: 'category_mid_2',  label: '📢 Mid 2',           size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
-      { value: 'category_mid_3',  label: '📢 Mid 3',           size: 'large', style: 'slide',   px: '1200×400', ratio: '3:1' },
-      { value: 'category_bottom', label: '⬇️ Bottom',           size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+      { value: 'home_hero',       label: 'Home Hero',       size: 'full',  style: 'slide',   px: '1920×600', ratio: '16:5' },
+      { value: 'category_hero',   label: 'Category Hero',   size: 'xl',    style: 'single',  px: '1600×500', ratio: '16:5' },
+      { value: 'category_mid_1',  label: 'Mid 1',           size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
+      { value: 'category_mid_2',  label: 'Mid 2',           size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
+      { value: 'category_mid_3',  label: 'Mid 3',           size: 'large', style: 'slide',   px: '1200×400', ratio: '3:1' },
+      { value: 'category_bottom', label: 'Bottom',          size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
     ],
     link_types: [
-      { value: 'category',    label: '📂 Category' },
-      { value: 'subcategory', label: '📁 Subcategory' },
-      { value: 'brand',       label: '🏷️ Brand' },
-      { value: 'product',     label: '🛍️ Specific Product' },
-      { value: 'custom',      label: '🔗 Custom URL' },
+      { value: 'category',    label: 'Category' },
+      { value: 'subcategory', label: 'Subcategory' },
+      { value: 'brand',       label: 'Brand' },
+      { value: 'product',     label: 'Product' },
+      { value: 'custom',      label: 'Custom URL' },
     ],
   });
 });
 
 /* --------------------------------------------------------------------- */
-/* PUBLIC — Active banners                                               */
+/* PUBLIC                                                                */
 /* --------------------------------------------------------------------- */
 
-// GET /api/banners/active?category=electronics&position=category_hero
 banners.get('/active', async (c) => {
   try {
     const url = new URL(c.req.url);
@@ -246,23 +194,17 @@ banners.get('/active', async (c) => {
     let query = 'SELECT * FROM banners WHERE active = 1';
     const bindings = [];
 
-    // ✅ Category filter — JSON array me check karo
     if (category) {
       query += ` AND (
-        category IS NULL 
-        OR category = '' 
-        OR category = '[]'
+        category IS NULL OR category = '' OR category = '[]'
         OR category LIKE ?
       )`;
       bindings.push(`%"${category}"%`);
     }
 
-    // ✅ Position filter — JSON array me check karo
     if (position) {
       query += ` AND (
-        position IS NULL 
-        OR position = '' 
-        OR position = '[]'
+        position IS NULL OR position = '' OR position = '[]'
         OR position LIKE ?
       )`;
       bindings.push(`%"${position}"%`);
@@ -277,7 +219,6 @@ banners.get('/active', async (c) => {
   }
 });
 
-// GET /api/banners?category=&position=&all=true
 banners.get('/', async (c) => {
   try {
     const url = new URL(c.req.url);
@@ -292,9 +233,7 @@ banners.get('/', async (c) => {
 
     if (category) {
       query += ` AND (
-        category IS NULL 
-        OR category = '' 
-        OR category = '[]'
+        category IS NULL OR category = '' OR category = '[]'
         OR category LIKE ?
       )`;
       bindings.push(`%"${category}"%`);
@@ -302,9 +241,7 @@ banners.get('/', async (c) => {
 
     if (position) {
       query += ` AND (
-        position IS NULL 
-        OR position = '' 
-        OR position = '[]'
+        position IS NULL OR position = '' OR position = '[]'
         OR position LIKE ?
       )`;
       bindings.push(`%"${position}"%`);
@@ -320,7 +257,7 @@ banners.get('/', async (c) => {
 });
 
 /* --------------------------------------------------------------------- */
-/* Admin                                                                 */
+/* ADMIN                                                                 */
 /* --------------------------------------------------------------------- */
 
 banners.get('/all', authMiddleware, requireAdmin, async (c) => {
@@ -335,12 +272,14 @@ banners.get('/all', authMiddleware, requireAdmin, async (c) => {
 });
 
 /* --------------------------------------------------------------------- */
-/* Shared create/update logic                                            */
+/* CREATE / UPDATE                                                       */
 /* --------------------------------------------------------------------- */
 
 async function createBanner(c) {
   const body = await c.req.parseBody().catch(() => ({}));
-  const title = (body.title && body.title.trim()) ? body.title.trim() : 'Untitled Banner';
+
+  // Title optional — default to 'Untitled Banner'
+  const title = (body.title && String(body.title).trim()) || 'Untitled Banner';
   const subtitle = body.subtitle || '';
   const buttonText = body.buttonText || 'Shop Now';
   const link = body.link || '/shop';
@@ -348,14 +287,10 @@ async function createBanner(c) {
   const order = intFromBody(body.order, 0);
   const active = boolFromBody(body.active, true) ? 1 : 0;
 
-  // ✅ Multi-select arrays
-  const categories = arrayFromForm(body, 'categories');
-  const positions = arrayFromForm(body, 'positions');
+  const categories = parseJSONArrayFromForm(body, 'categories');
+  const positions = parseJSONArrayFromForm(body, 'positions');
+  const subcategories = parseJSONArrayFromForm(body, 'subcategories');
 
-  // Fallback: single value
-  if (categories.length === 0 && body.category) {
-    categories.push(body.category);
-  }
   if (positions.length === 0 && body.position) {
     positions.push(body.position);
   }
@@ -366,7 +301,7 @@ async function createBanner(c) {
   const size = body.size || 'large';
   const display_style = body.display_style || 'single';
   const link_type = body.link_type || 'custom';
-  const show_text_overlay = boolFromBody(body.showTextOverlay, true) ? 1 : 0;
+  const show_text_overlay = boolFromBody(body.showTextOverlay, false) ? 1 : 0;
 
   const imageUrls = await handleImageUpload(body);
   const imagesJson = JSON.stringify(imageUrls);
@@ -385,8 +320,8 @@ async function createBanner(c) {
       id, title, subtitle, buttonText, link,
       primaryImage, imagesJson, imageKey,
       order, active,
-      JSON.stringify(categories),  // ✅ Array
-      JSON.stringify(positions),   // ✅ Array
+      JSON.stringify(categories),
+      JSON.stringify(positions),
       size, display_style, link_type,
       show_text_overlay
     )
@@ -412,11 +347,10 @@ async function updateBanner(c) {
     primaryImage = newImageUrls[0];
   }
 
-  // ✅ Multi-select arrays
-  let categories = arrayFromForm(body, 'categories');
-  let positions = arrayFromForm(body, 'positions');
+  let categories = parseJSONArrayFromForm(body, 'categories');
+  let positions = parseJSONArrayFromForm(body, 'positions');
+  let subcategories = parseJSONArrayFromForm(body, 'subcategories');
 
-  // Agar nahi aaye body me → existing rakho
   if (categories.length === 0 && body.categories === undefined) {
     categories = parseArray(existing.category);
   }
@@ -425,7 +359,9 @@ async function updateBanner(c) {
   }
 
   const merged = {
-    title: body.title ?? existing.title,
+    title: body.title !== undefined
+      ? ((body.title && String(body.title).trim()) || 'Untitled Banner')
+      : existing.title,
     subtitle: body.subtitle ?? existing.subtitle,
     button_text: body.buttonText ?? existing.button_text,
     link: body.link ?? existing.link,
@@ -441,8 +377,8 @@ async function updateBanner(c) {
     link_type: body.link_type !== undefined ? body.link_type : (existing.link_type || 'custom'),
     show_text_overlay:
       body.showTextOverlay !== undefined
-        ? (boolFromBody(body.showTextOverlay, true) ? 1 : 0)
-        : (existing.show_text_overlay ?? 1),
+        ? (boolFromBody(body.showTextOverlay, false) ? 1 : 0)
+        : (existing.show_text_overlay ?? 0),
   };
 
   await c.env.DB.prepare(
@@ -469,12 +405,11 @@ async function updateBanner(c) {
 }
 
 /* --------------------------------------------------------------------- */
-/* Create / Update / Delete                                              */
+/* ROUTES                                                                */
 /* --------------------------------------------------------------------- */
 
 banners.post('/', authMiddleware, requireAdmin, createBanner);
 banners.post('/create', authMiddleware, requireAdmin, createBanner);
-
 banners.put('/:id', authMiddleware, requireAdmin, updateBanner);
 
 banners.delete('/:id', authMiddleware, requireAdmin, async (c) => {
