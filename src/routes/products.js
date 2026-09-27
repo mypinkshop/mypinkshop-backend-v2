@@ -61,6 +61,19 @@ const makeSlug = (s) => String(s || '')
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/^-|-$/g, '');
 
+/**
+ * ✅ AUTO-CALCULATE DISCOUNT
+ * Har price/original_price change pe discount recalculate hoga
+ */
+function calculateDiscount(price, originalPrice) {
+  const p = parseFloat(price) || 0;
+  const op = parseFloat(originalPrice) || 0;
+  if (op > 0 && op > p) {
+    return Math.round(((op - p) / op) * 100);
+  }
+  return 0;
+}
+
 // ============================================================
 // AUTO-CREATE CATEGORY
 // ============================================================
@@ -110,6 +123,13 @@ async function ensureCategory(db, name, type = 'main', parentId = null) {
 function serializeProduct(row) {
   if (!row) return null;
   const images = safeJsonArray(row.images);
+
+  // ✅ Auto-calculate discount (agar DB me purana/galat ho)
+  const calculatedDiscount = calculateDiscount(row.price, row.original_price);
+  const discountPercent = calculatedDiscount > 0
+    ? calculatedDiscount
+    : (parseFloat(row.discount_percent) || 0);
+
   return {
     ...row,
     id: row.id,
@@ -139,6 +159,9 @@ function serializeProduct(row) {
     skinType: row.skin_type,
     hairType: row.hair_type,
     hairConcerns: row.hair_concerns,
+    // ✅ Discount — calculated value use karo
+    discountPercent: discountPercent,
+    discount_percent: discountPercent,
     seoMeta: {
       "@context": "https://schema.org/",
       "@type": "Product",
@@ -265,6 +288,9 @@ async function replaceVariants(db, productId, variants, option1Name = 'Size', op
 
 // ============================================================
 // GET /api/products
+// ✅ Search me SKU
+// ✅ Brand filter
+// ✅ Sort by discount_high
 // ============================================================
 products.get('/', async (c) => {
   try {
@@ -272,6 +298,7 @@ products.get('/', async (c) => {
     const category = url.searchParams.get('category');
     const subCategory = url.searchParams.get('subCategory');
     const search = url.searchParams.get('search');
+    const brand = url.searchParams.get('brand');
     const minPrice = url.searchParams.get('minPrice');
     const maxPrice = url.searchParams.get('maxPrice');
     const featured = url.searchParams.get('featured');
@@ -289,10 +316,15 @@ products.get('/', async (c) => {
       conditions.push('sub_category = ?');
       bindings.push(subCategory);
     }
+    if (brand) {
+      conditions.push('LOWER(brand) = LOWER(?)');
+      bindings.push(brand);
+    }
+    // ✅ Search — title + brand + description + SKU
     if (search) {
-      conditions.push('(name LIKE ? OR brand LIKE ? OR description LIKE ?)');
+      conditions.push('(name LIKE ? OR brand LIKE ? OR description LIKE ? OR sku LIKE ?)');
       const like = `%${search}%`;
-      bindings.push(like, like, like);
+      bindings.push(like, like, like, like);
     }
     if (minPrice && !Number.isNaN(Number(minPrice))) {
       conditions.push('price >= ?');
@@ -308,10 +340,20 @@ products.get('/', async (c) => {
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
+    // ✅ Sort options
     let orderClause = 'ORDER BY created_at DESC';
     if (sort === 'price_asc' || sort === 'price_low') orderClause = 'ORDER BY price ASC';
     else if (sort === 'price_desc' || sort === 'price_high') orderClause = 'ORDER BY price DESC';
-    else if (sort === 'rating') orderClause = 'ORDER BY rating DESC';
+    else if (sort === 'rating') orderClause = 'ORDER BY rating DESC, review_count DESC';
+    else if (sort === 'popular') orderClause = 'ORDER BY review_count DESC, rating DESC, created_at DESC';
+    else if (sort === 'discount_high' || sort === 'discount') {
+      orderClause = `ORDER BY 
+        CASE 
+          WHEN original_price > price AND original_price > 0 
+          THEN (original_price - price) * 100.0 / original_price 
+          ELSE 0 
+        END DESC, rating DESC`;
+    }
     else if (sort === 'newest') orderClause = 'ORDER BY created_at DESC';
 
     const listQuery = `SELECT * FROM products ${whereClause} ${orderClause} LIMIT ? OFFSET ?`;
@@ -379,7 +421,7 @@ products.get('/:id/variants', async (c) => {
 
 // ============================================================
 // POST /api/products/create
-// ✅ FIXED: 48 columns, 48 values (44 placeholders + 4 hardcoded)
+// ✅ AUTO-CALCULATE DISCOUNT (frontend value ignore)
 // ============================================================
 products.post('/create', authMiddleware, requireAdmin, async (c) => {
   try {
@@ -396,7 +438,6 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       productDetails = {},
       price,
       originalPrice = 0,
-      discountPercent = 0,
       tax = 18,
       stock = 10,
       sku = null,
@@ -454,17 +495,22 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
 
     const hasVars = hasVariations || (Array.isArray(variants) && variants.length > 0);
 
-    // ✅ 44 bind values (slug bhi included, rating/review_count hardcoded)
+    // ✅ AUTO-CALCULATE DISCOUNT
+    const finalPrice = parseFloat(price) || 0;
+    const finalOriginalPrice = parseFloat(originalPrice) || 0;
+    const calculatedDiscount = calculateDiscount(finalPrice, finalOriginalPrice);
+
     const bindValues = [
       id, vendorId, vendorName,
       toSafeString(name), toSafeString(brand),
       toSafeString(mainCategory), toSafeString(subCategory),
-      toSafeString(slug),
+      toSafeString(slug || makeSlug(name)),
       toSafeString(Array.isArray(description) ? description.join('\n') : description),
       toSafeJsonString(description), toSafeJsonString(keyFeatures),
       toSafeJsonObjectString(productDetails), toSafeString(shortDescription),
-      parseFloat(price) || 0, parseFloat(originalPrice) || 0,
-      parseFloat(discountPercent) || 0, parseFloat(tax) || 18,
+      finalPrice, finalOriginalPrice,
+      calculatedDiscount,  // ✅ AUTO-CALCULATED
+      parseFloat(tax) || 18,
       parseInt(stock, 10) || 10, toSafeString(sku),
       toSafeString(weight), toSafeString(dimensions),
       toSafeJsonString(images), toSafeString(skinType),
@@ -475,7 +521,7 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       toSafeJsonString(variations), hasVars ? 1 : 0,
       toSafeString(option1Name), toSafeString(option2Name),
       toSafeString(metaTitle), toSafeString(metaDescription),
-      toSafeString(metaKeywords), toSafeString(slug || id),
+      toSafeString(metaKeywords), toSafeString(slug || makeSlug(name) || id),
       isActive ? 1 : 0, isFeatured ? 1 : 0,
       adminApproved ? 1 : 0
     ];
@@ -484,7 +530,6 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       return fail(c, `Internal error: expected 44 bind values, got ${bindValues.length}`, 500);
     }
 
-    // ✅ 48 columns | 44 placeholders + 4 hardcoded (rating=4.8, review_count=0, created_at, updated_at)
     await c.env.DB.prepare(
       `INSERT INTO products
         (id, vendor_id, vendor_name, name, brand, main_category, sub_category, category_slug,
@@ -520,6 +565,7 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
 
 // ============================================================
 // PUT /api/products/:id
+// ✅ AUTO-RECALCULATE DISCOUNT
 // ============================================================
 products.put('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
@@ -528,6 +574,13 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
     if (!existing) return fail(c, 'Product not found.', 404);
 
     const body = await c.req.json().catch(() => ({}));
+
+    // ✅ AUTO-RECALCULATE DISCOUNT
+    const newPrice = body.price !== undefined ? parseFloat(body.price) || 0 : existing.price;
+    const newOriginalPrice = body.originalPrice !== undefined
+      ? parseFloat(body.originalPrice) || 0
+      : existing.original_price;
+    const calculatedDiscount = calculateDiscount(newPrice, newOriginalPrice);
 
     const merged = {
       name: body.name ?? existing.name,
@@ -543,9 +596,9 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
         ? toSafeJsonObjectString(body.productDetails)
         : (body.specifications !== undefined ? toSafeJsonObjectString(body.specifications) : existing.specifications),
       short_description: body.shortDescription !== undefined ? toSafeString(body.shortDescription) : existing.short_description,
-      price: body.price !== undefined ? parseFloat(body.price) || 0 : existing.price,
-      original_price: body.originalPrice !== undefined ? parseFloat(body.originalPrice) || 0 : existing.original_price,
-      discount_percent: body.discountPercent !== undefined ? parseFloat(body.discountPercent) || 0 : existing.discount_percent,
+      price: newPrice,
+      original_price: newOriginalPrice,
+      discount_percent: calculatedDiscount,  // ✅ AUTO-RECALCULATED
       tax: body.tax !== undefined ? parseFloat(body.tax) || 18 : existing.tax,
       stock: body.stock !== undefined ? parseInt(body.stock, 10) || 0 : existing.stock,
       sku: body.sku !== undefined ? toSafeString(body.sku) : existing.sku,
