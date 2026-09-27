@@ -18,6 +18,20 @@ function slugify(str) {
     .replace(/^-|-$/g, '');
 }
 
+/**
+ * JSON string parse karo safely
+ */
+function parseJSON(str, fallback = []) {
+  if (!str) return fallback;
+  if (Array.isArray(str) || typeof str === 'object') return str;
+  try {
+    const parsed = JSON.parse(str);
+    return parsed ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function formatBrand(b) {
   return {
     _id: b.id,
@@ -28,6 +42,11 @@ function formatBrand(b) {
     banner: b.banner || '',
     description: b.description || '',
     tagline: b.tagline || '',
+    // ✅ NAYE FIELDS
+    highlights: parseJSON(b.highlights, []),
+    offers: parseJSON(b.offers, []),
+    featured_products: parseJSON(b.featured_products, []),
+    // Display
     active: b.active === 1,
     is_featured: b.is_featured === 1,
     sort_order: b.sort_order ?? 0,
@@ -37,9 +56,6 @@ function formatBrand(b) {
   };
 }
 
-/**
- * Check karo ki brands table exist karta hai ya nahi
- */
 async function brandsTableExists(c) {
   try {
     const r = await c.env.DB.prepare(
@@ -51,12 +67,29 @@ async function brandsTableExists(c) {
   }
 }
 
+/**
+ * Check karo ki naye columns exist karte hain ya nahi
+ * (purane DB me nahi honge)
+ */
+async function hasNewColumns(c) {
+  try {
+    const { results } = await c.env.DB.prepare(`PRAGMA table_info(brands)`).all();
+    const cols = (results || []).map((r) => r.name);
+    return {
+      highlights: cols.includes('highlights'),
+      offers: cols.includes('offers'),
+      featured_products: cols.includes('featured_products'),
+    };
+  } catch {
+    return { highlights: false, offers: false, featured_products: false };
+  }
+}
+
 /* --------------------------------------------------------------------- */
 /* PUBLIC                                                                */
 /* --------------------------------------------------------------------- */
 
 // GET /api/brands?search=&limit=&featured=
-// Saare brands — brands table se (fallback: products se derive)
 brands.get('/', async (c) => {
   try {
     const url = new URL(c.req.url);
@@ -92,6 +125,9 @@ brands.get('/', async (c) => {
         banner: '',
         description: '',
         tagline: '',
+        highlights: [],
+        offers: [],
+        featured_products: [],
         active: true,
         is_featured: false,
         product_count: r.product_count,
@@ -130,7 +166,28 @@ brands.get('/', async (c) => {
   }
 });
 
-// GET /api/brands/popular — Top 20 by product count
+// GET /api/brands/admin/all — saare brands (including inactive) — ADMIN
+brands.get('/admin/all', authMiddleware, requireAdmin, async (c) => {
+  try {
+    const hasBrandsTable = await brandsTableExists(c);
+    if (!hasBrandsTable) return ok(c, []);
+
+    const { results } = await c.env.DB.prepare(
+      `SELECT b.*, 
+        (SELECT COUNT(*) FROM products p 
+         WHERE LOWER(p.brand) = LOWER(b.name) AND p.is_active = 1) as product_count
+       FROM brands b
+       ORDER BY b.is_featured DESC, b.sort_order ASC, b.name ASC`
+    ).all();
+
+    return ok(c, (results || []).map(formatBrand));
+  } catch (err) {
+    console.error('Admin brands list error:', err);
+    return fail(c, err.message, 500);
+  }
+});
+
+// GET /api/brands/popular — Top 20
 brands.get('/popular', async (c) => {
   try {
     const hasBrandsTable = await brandsTableExists(c);
@@ -169,17 +226,13 @@ brands.get('/popular', async (c) => {
   }
 });
 
-// GET /api/brands/:slug — ek brand ki detail
+// GET /api/brands/:slug — brand detail
 brands.get('/:slug', async (c) => {
   try {
     const slug = c.req.param('slug');
     const hasBrandsTable = await brandsTableExists(c);
 
-    // Fallback: products se derive
     if (!hasBrandsTable) {
-      // Slug ko name me convert karo (approx)
-      const decodedName = slug.replace(/-/g, ' ');
-
       const match = await c.env.DB.prepare(
         `SELECT brand AS name FROM products 
          WHERE LOWER(REPLACE(brand, ' ', '-')) = LOWER(?) 
@@ -200,6 +253,9 @@ brands.get('/:slug', async (c) => {
         banner: '',
         description: '',
         tagline: '',
+        highlights: [],
+        offers: [],
+        featured_products: [],
         active: true,
         is_featured: false,
         product_count: countRow?.product_count || 0,
@@ -233,7 +289,6 @@ brands.get('/:slug/products', async (c) => {
     const offset = (page - 1) * limit;
     const sort = url.searchParams.get('sort') || 'popular';
 
-    // Brand ka actual naam dhundho
     const hasBrandsTable = await brandsTableExists(c);
     let brandName = null;
 
@@ -255,7 +310,6 @@ brands.get('/:slug/products', async (c) => {
 
     if (!brandName) return fail(c, 'Brand not found', 404);
 
-    // Sort clause
     let orderBy = 'review_count DESC, rating DESC, created_at DESC';
     if (sort === 'price_low') orderBy = 'price ASC';
     else if (sort === 'price_high') orderBy = 'price DESC';
@@ -276,7 +330,6 @@ brands.get('/:slug/products', async (c) => {
 
     const total = totalRow?.total || 0;
 
-    // Products format karo (images, price etc.)
     const products = (results || []).map((p) => {
       let images = [];
       try {
@@ -322,7 +375,7 @@ brands.get('/:slug/products', async (c) => {
   }
 });
 
-// POST /api/brands/ensure — check karo brand exist karta hai ya nahi
+// POST /api/brands/ensure
 brands.post('/ensure', authMiddleware, async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
@@ -332,7 +385,6 @@ brands.post('/ensure', authMiddleware, async (c) => {
 
     const cleanName = name.trim();
 
-    // Products me check karo
     const existing = await c.env.DB.prepare(
       `SELECT DISTINCT brand FROM products 
        WHERE LOWER(brand) = LOWER(?) LIMIT 1`
@@ -342,7 +394,6 @@ brands.post('/ensure', authMiddleware, async (c) => {
       return ok(c, { brand: existing.brand, exists: true, message: 'Brand already exists' });
     }
 
-    // Brands table me check karo
     const hasBrandsTable = await brandsTableExists(c);
     if (hasBrandsTable) {
       const b = await c.env.DB.prepare(
@@ -387,6 +438,19 @@ brands.post('/', authMiddleware, requireAdmin, async (c) => {
     const sort_order = parseInt(body.sort_order) || 0;
     const active = body.active === 'false' || body.active === false ? 0 : 1;
 
+    // ✅ NAYE FIELDS — JSON
+    const highlights = body.highlights
+      ? (typeof body.highlights === 'string' ? body.highlights : JSON.stringify(body.highlights))
+      : '[]';
+    const offers = body.offers
+      ? (typeof body.offers === 'string' ? body.offers : JSON.stringify(body.offers))
+      : '[]';
+    const featured_products = body.featured_products
+      ? (typeof body.featured_products === 'string'
+          ? body.featured_products
+          : JSON.stringify(body.featured_products))
+      : '[]';
+
     // Logo upload
     let logo = typeof body.logo === 'string' ? body.logo : '';
     if (body.logo && typeof body.logo === 'object' && typeof body.logo.arrayBuffer === 'function') {
@@ -407,13 +471,35 @@ brands.post('/', authMiddleware, requireAdmin, async (c) => {
 
     const id = genId('brand');
 
-    await c.env.DB.prepare(
-      `INSERT INTO brands 
-        (id, name, slug, logo, banner, description, tagline, active, is_featured, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
-    )
-      .bind(id, name, slug, logo, banner, description, tagline, active, is_featured, sort_order)
-      .run();
+    // Column existence check (purane DB me nahi honge)
+    const cols = await hasNewColumns(c);
+
+    let insertSql, bindings;
+
+    if (cols.highlights && cols.offers && cols.featured_products) {
+      insertSql = `INSERT INTO brands 
+        (id, name, slug, logo, banner, description, tagline,
+         highlights, offers, featured_products,
+         active, is_featured, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`;
+      bindings = [
+        id, name, slug, logo, banner, description, tagline,
+        highlights, offers, featured_products,
+        active, is_featured, sort_order,
+      ];
+    } else {
+      // Fallback: sirf purane columns
+      insertSql = `INSERT INTO brands 
+        (id, name, slug, logo, banner, description, tagline,
+         active, is_featured, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`;
+      bindings = [
+        id, name, slug, logo, banner, description, tagline,
+        active, is_featured, sort_order,
+      ];
+    }
+
+    await c.env.DB.prepare(insertSql).bind(...bindings).run();
 
     const created = await c.env.DB.prepare('SELECT * FROM brands WHERE id = ?').bind(id).first();
     return ok(c, formatBrand(created), undefined, 201);
@@ -449,6 +535,19 @@ brands.put('/:id', authMiddleware, requireAdmin, async (c) => {
       banner = body.banner;
     }
 
+    // ✅ NAYE FIELDS — merge
+    const highlights = body.highlights !== undefined
+      ? (typeof body.highlights === 'string' ? body.highlights : JSON.stringify(body.highlights))
+      : (existing.highlights || '[]');
+    const offers = body.offers !== undefined
+      ? (typeof body.offers === 'string' ? body.offers : JSON.stringify(body.offers))
+      : (existing.offers || '[]');
+    const featured_products = body.featured_products !== undefined
+      ? (typeof body.featured_products === 'string'
+          ? body.featured_products
+          : JSON.stringify(body.featured_products))
+      : (existing.featured_products || '[]');
+
     const merged = {
       name: body.name ?? existing.name,
       slug: body.slug ?? existing.slug,
@@ -465,22 +564,86 @@ brands.put('/:id', authMiddleware, requireAdmin, async (c) => {
       sort_order: body.sort_order !== undefined ? parseInt(body.sort_order) : existing.sort_order,
     };
 
-    await c.env.DB.prepare(
-      `UPDATE brands SET 
-        name = ?, slug = ?, logo = ?, banner = ?, description = ?, tagline = ?,
-        active = ?, is_featured = ?, sort_order = ?, updated_at = datetime('now')
-       WHERE id = ?`
-    )
-      .bind(
-        merged.name, merged.slug, merged.logo, merged.banner, merged.description, merged.tagline,
-        merged.active, merged.is_featured, merged.sort_order, id
+    // Column existence check
+    const cols = await hasNewColumns(c);
+
+    if (cols.highlights && cols.offers && cols.featured_products) {
+      await c.env.DB.prepare(
+        `UPDATE brands SET 
+          name = ?, slug = ?, logo = ?, banner = ?, description = ?, tagline = ?,
+          highlights = ?, offers = ?, featured_products = ?,
+          active = ?, is_featured = ?, sort_order = ?, updated_at = datetime('now')
+         WHERE id = ?`
       )
-      .run();
+        .bind(
+          merged.name, merged.slug, merged.logo, merged.banner, merged.description, merged.tagline,
+          highlights, offers, featured_products,
+          merged.active, merged.is_featured, merged.sort_order, id
+        )
+        .run();
+    } else {
+      await c.env.DB.prepare(
+        `UPDATE brands SET 
+          name = ?, slug = ?, logo = ?, banner = ?, description = ?, tagline = ?,
+          active = ?, is_featured = ?, sort_order = ?, updated_at = datetime('now')
+         WHERE id = ?`
+      )
+        .bind(
+          merged.name, merged.slug, merged.logo, merged.banner, merged.description, merged.tagline,
+          merged.active, merged.is_featured, merged.sort_order, id
+        )
+        .run();
+    }
 
     const updated = await c.env.DB.prepare('SELECT * FROM brands WHERE id = ?').bind(id).first();
     return ok(c, formatBrand(updated));
   } catch (err) {
     console.error('Update brand error:', err);
+    return fail(c, err.message, 500);
+  }
+});
+
+// PATCH /api/brands/:id — quick toggle (active, is_featured)
+brands.patch('/:id', authMiddleware, requireAdmin, async (c) => {
+  try {
+    const hasBrandsTable = await brandsTableExists(c);
+    if (!hasBrandsTable) return fail(c, 'Brands table not set up yet', 500);
+
+    const id = c.req.param('id');
+    const existing = await c.env.DB.prepare('SELECT * FROM brands WHERE id = ?').bind(id).first();
+    if (!existing) return fail(c, 'Brand not found', 404);
+
+    const body = await c.req.json().catch(() => ({}));
+
+    const updates = [];
+    const bindings = [];
+
+    if (body.active !== undefined) {
+      updates.push('active = ?');
+      bindings.push(body.active === true || body.active === 1 || body.active === 'true' ? 1 : 0);
+    }
+    if (body.is_featured !== undefined) {
+      updates.push('is_featured = ?');
+      bindings.push(body.is_featured === true || body.is_featured === 1 || body.is_featured === 'true' ? 1 : 0);
+    }
+    if (body.sort_order !== undefined) {
+      updates.push('sort_order = ?');
+      bindings.push(parseInt(body.sort_order) || 0);
+    }
+
+    if (updates.length === 0) return fail(c, 'No valid fields to update', 400);
+
+    updates.push(`updated_at = datetime('now')`);
+    bindings.push(id);
+
+    await c.env.DB.prepare(
+      `UPDATE brands SET ${updates.join(', ')} WHERE id = ?`
+    ).bind(...bindings).run();
+
+    const updated = await c.env.DB.prepare('SELECT * FROM brands WHERE id = ?').bind(id).first();
+    return ok(c, formatBrand(updated));
+  } catch (err) {
+    console.error('Patch brand error:', err);
     return fail(c, err.message, 500);
   }
 });
