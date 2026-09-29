@@ -20,7 +20,9 @@ addresses.get('/', authMiddleware, async (c) => {
     const user = c.get('user');
     const { results } = await c.env.DB.prepare(
       'SELECT * FROM user_addresses WHERE user_id = ? ORDER BY is_default DESC, created_at DESC'
-    ).bind(user.id).all();
+    )
+      .bind(user.id)
+      .all();
 
     return ok(c, results || []);
   } catch (err) {
@@ -29,8 +31,7 @@ addresses.get('/', authMiddleware, async (c) => {
 });
 
 /* --------------------------------------------------------------------- */
-/* POST /api/users/addresses - Naya address add karo                      */
-/* ✅ DUPLICATE CHECK add kiya                                            */
+/* POST /api/users/addresses - Naya address add karo (with duplicate check) */
 /* --------------------------------------------------------------------- */
 addresses.post('/', authMiddleware, async (c) => {
   try {
@@ -43,7 +44,7 @@ addresses.post('/', authMiddleware, async (c) => {
       return fail(c, 'name, phone, line1, city, state, pincode are required.', 400);
     }
 
-    // ✅ DUPLICATE CHECK — same address already saved hai?
+    // ✅ DUPLICATE CHECK
     const existing = await c.env.DB.prepare(
       `SELECT * FROM user_addresses
        WHERE user_id = ?
@@ -64,17 +65,17 @@ addresses.post('/', authMiddleware, async (c) => {
 
     if (existing) {
       console.log('⏭️ Duplicate address — skipping save');
-      // ✅ Existing return karo (naya save mat karo)
       return ok(c, existing, undefined, 200);
     }
 
     const id = genId('addr');
 
-    // ✅ Agar default address hai, toh pehle wale sab default hata do
     if (isDefault) {
       await c.env.DB.prepare(
         'UPDATE user_addresses SET is_default = 0 WHERE user_id = ?'
-      ).bind(user.id).run();
+      )
+        .bind(user.id)
+        .run();
     }
 
     await c.env.DB.prepare(
@@ -85,7 +86,10 @@ addresses.post('/', authMiddleware, async (c) => {
       .bind(id, user.id, name, phone, line1, line2 || '', city, state, pincode, isDefault ? 1 : 0)
       .run();
 
-    const saved = await c.env.DB.prepare('SELECT * FROM user_addresses WHERE id = ?').bind(id).first();
+    const saved = await c.env.DB.prepare('SELECT * FROM user_addresses WHERE id = ?')
+      .bind(id)
+      .first();
+
     return ok(c, saved, undefined, 201);
   } catch (err) {
     return fail(c, `Failed to add address: ${err.message}`, 500);
@@ -94,7 +98,6 @@ addresses.post('/', authMiddleware, async (c) => {
 
 /* --------------------------------------------------------------------- */
 /* PUT /api/users/addresses/:id - Address update karo                     */
-/* ✅ UPDATE me bhi duplicate check (different id pe same address)         */
 /* --------------------------------------------------------------------- */
 addresses.put('/:id', authMiddleware, async (c) => {
   try {
@@ -104,7 +107,9 @@ addresses.put('/:id', authMiddleware, async (c) => {
 
     const existing = await c.env.DB.prepare(
       'SELECT * FROM user_addresses WHERE id = ? AND user_id = ?'
-    ).bind(id, user.id).first();
+    )
+      .bind(id, user.id)
+      .first();
 
     if (!existing) return fail(c, 'Address not found.', 404);
 
@@ -116,10 +121,11 @@ addresses.put('/:id', authMiddleware, async (c) => {
       city: body.city ?? existing.city,
       state: body.state ?? existing.state,
       pincode: body.pincode ?? existing.pincode,
-      is_default: body.isDefault !== undefined ? (body.isDefault ? 1 : 0) : existing.is_default,
+      is_default:
+        body.isDefault !== undefined ? (body.isDefault ? 1 : 0) : existing.is_default,
     };
 
-    // ✅ DUPLICATE CHECK — koi dusra address same hai?
+    // ✅ DUPLICATE CHECK (different id pe same address)
     const duplicate = await c.env.DB.prepare(
       `SELECT id FROM user_addresses
        WHERE user_id = ?
@@ -144,23 +150,34 @@ addresses.put('/:id', authMiddleware, async (c) => {
       return fail(c, 'This address already exists in your saved addresses.', 409);
     }
 
-    // ✅ Agar default address update ho raha hai, toh pehle sab default hata do
     if (merged.is_default) {
       await c.env.DB.prepare(
         'UPDATE user_addresses SET is_default = 0 WHERE user_id = ?'
-      ).bind(user.id).run();
+      )
+        .bind(user.id)
+        .run();
     }
 
     await c.env.DB.prepare(
       `UPDATE user_addresses SET name = ?, phone = ?, line1 = ?, line2 = ?, city = ?, state = ?, pincode = ?, is_default = ?, updated_at = datetime('now') WHERE id = ?`
     )
       .bind(
-        merged.name, merged.phone, merged.line1, merged.line2,
-        merged.city, merged.state, merged.pincode, merged.is_default, id
+        merged.name,
+        merged.phone,
+        merged.line1,
+        merged.line2,
+        merged.city,
+        merged.state,
+        merged.pincode,
+        merged.is_default,
+        id
       )
       .run();
 
-    const updated = await c.env.DB.prepare('SELECT * FROM user_addresses WHERE id = ?').bind(id).first();
+    const updated = await c.env.DB.prepare('SELECT * FROM user_addresses WHERE id = ?')
+      .bind(id)
+      .first();
+
     return ok(c, updated);
   } catch (err) {
     return fail(c, `Failed to update address: ${err.message}`, 500);
@@ -177,24 +194,32 @@ const setDefaultAddressHandler = async (c) => {
 
     const existing = await c.env.DB.prepare(
       'SELECT * FROM user_addresses WHERE id = ? AND user_id = ?'
-    ).bind(id, user.id).first();
+    )
+      .bind(id, user.id)
+      .first();
 
     if (!existing) return fail(c, 'Address not found.', 404);
 
-    await c.env.DB.prepare(
-      'UPDATE user_addresses SET is_default = 0 WHERE user_id = ?'
-    ).bind(user.id).run();
+    await c.env.DB.prepare('UPDATE user_addresses SET is_default = 0 WHERE user_id = ?')
+      .bind(user.id)
+      .run();
 
     await c.env.DB.prepare(
       `UPDATE user_addresses SET is_default = 1, updated_at = datetime('now') WHERE id = ?`
-    ).bind(id).run();
+    )
+      .bind(id)
+      .run();
 
-    const updated = await c.env.DB.prepare('SELECT * FROM user_addresses WHERE id = ?').bind(id).first();
+    const updated = await c.env.DB.prepare('SELECT * FROM user_addresses WHERE id = ?')
+      .bind(id)
+      .first();
+
     return ok(c, updated);
   } catch (err) {
     return fail(c, `Failed to set default address: ${err.message}`, 500);
   }
 };
+
 addresses.put('/:id/default', authMiddleware, setDefaultAddressHandler);
 addresses.patch('/:id/default', authMiddleware, setDefaultAddressHandler);
 
@@ -208,7 +233,9 @@ addresses.delete('/:id', authMiddleware, async (c) => {
 
     const result = await c.env.DB.prepare(
       'DELETE FROM user_addresses WHERE id = ? AND user_id = ?'
-    ).bind(id, user.id).run();
+    )
+      .bind(id, user.id)
+      .run();
 
     if (result.meta?.changes === 0) return fail(c, 'Address not found.', 404);
     return ok(c, { id, deleted: true });
