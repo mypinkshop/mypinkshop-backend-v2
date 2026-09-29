@@ -6,6 +6,26 @@ import { ok, fail } from '../lib/utils.js';
 const settings = new Hono();
 
 /* --------------------------------------------------------------------- */
+/* Defaults — agar DB me value missing ho to ye use hoga                 */
+/* --------------------------------------------------------------------- */
+const DEFAULTS = {
+  free_shipping_threshold: 499,
+  shipping_charge: 49,
+  express_shipping_charge: 99,
+  tax_percent: 5,
+  cod_charge: 0,
+  cod_available: true,
+  min_order_value: 0,
+  delivery_days_min: 3,
+  delivery_days_max: 5,
+  cut_off_time: '16:00',
+  warehouse_pincode: '400072',
+  warehouse_city: 'Mumbai',
+  warehouse_state: 'Maharashtra',
+  free_shipping_enabled: true,
+};
+
+/* --------------------------------------------------------------------- */
 /* Helper — fetch all settings from DB                                    */
 /* --------------------------------------------------------------------- */
 async function getAllSettings(db) {
@@ -26,6 +46,7 @@ async function getAllSettings(db) {
 /* Helper — safe type conversion                                          */
 /* --------------------------------------------------------------------- */
 function toNumber(val, fallback = 0) {
+  if (val === undefined || val === null || val === '') return fallback;
   const n = parseFloat(val);
   return Number.isFinite(n) ? n : fallback;
 }
@@ -36,41 +57,62 @@ function toBool(val, fallback = false) {
 }
 
 /* --------------------------------------------------------------------- */
+/* Helper — build public config (single source of truth)                  */
+/* --------------------------------------------------------------------- */
+export function buildShippingConfig(map) {
+  return {
+    freeShippingThreshold: toNumber(map.free_shipping_threshold, DEFAULTS.free_shipping_threshold),
+    shippingCharge: toNumber(map.shipping_charge, DEFAULTS.shipping_charge),
+    expressShippingCharge: toNumber(map.express_shipping_charge, DEFAULTS.express_shipping_charge),
+    taxPercent: toNumber(map.tax_percent, DEFAULTS.tax_percent),
+    codCharge: toNumber(map.cod_charge, DEFAULTS.cod_charge),
+    codAvailable: toBool(map.cod_available, DEFAULTS.cod_available),
+    minOrderValue: toNumber(map.min_order_value, DEFAULTS.min_order_value),
+    deliveryDaysMin: toNumber(map.delivery_days_min, DEFAULTS.delivery_days_min),
+    deliveryDaysMax: toNumber(map.delivery_days_max, DEFAULTS.delivery_days_max),
+    cutOffTime: map.cut_off_time || DEFAULTS.cut_off_time,
+    warehousePincode: map.warehouse_pincode || DEFAULTS.warehouse_pincode,
+    warehouseCity: map.warehouse_city || DEFAULTS.warehouse_city,
+    warehouseState: map.warehouse_state || DEFAULTS.warehouse_state,
+    freeShippingEnabled: toBool(map.free_shipping_enabled, DEFAULTS.free_shipping_enabled),
+  };
+}
+
+/* --------------------------------------------------------------------- */
 /* PUBLIC — GET /api/settings/public                                      */
 /* Frontend (Cart, Checkout) use karega                                  */
 /* --------------------------------------------------------------------- */
 settings.get('/public', async (c) => {
   try {
     const map = await getAllSettings(c.env.DB);
-
-    return ok(c, {
-      freeShippingThreshold: toNumber(map.free_shipping_threshold, 499),
-      shippingCharge: toNumber(map.shipping_charge, 49),
-      expressShippingCharge: toNumber(map.express_shipping_charge, 99),
-      taxPercent: toNumber(map.tax_percent, 5),
-      codCharge: toNumber(map.cod_charge, 0),
-      codAvailable: toBool(map.cod_available, true),
-      minOrderValue: toNumber(map.min_order_value, 0),
-    });
+    const config = buildShippingConfig(map);
+    return ok(c, config);
   } catch (err) {
     return fail(c, `Failed to load public settings: ${err.message}`, 500);
   }
 });
 
 /* --------------------------------------------------------------------- */
-/* ADMIN — GET /api/admin/settings                                        */
+/* ADMIN — GET /api/settings/admin                                        */
 /* --------------------------------------------------------------------- */
 settings.get('/admin', authMiddleware, requireAdmin, async (c) => {
   try {
     const map = await getAllSettings(c.env.DB);
-    return ok(c, map);
+    const config = buildShippingConfig(map);
+    return ok(c, {
+      // Raw values (snake_case) — admin panel ke form ke liye
+      ...DEFAULTS,
+      ...map,
+      // Parsed values (camelCase) — preview ke liye
+      parsed: config,
+    });
   } catch (err) {
     return fail(c, `Failed to load settings: ${err.message}`, 500);
   }
 });
 
 /* --------------------------------------------------------------------- */
-/* ADMIN — PUT /api/admin/settings                                        */
+/* ADMIN — PUT /api/settings/admin                                        */
 /* Body: { freeShippingThreshold: 499, shippingCharge: 49, ... }          */
 /* --------------------------------------------------------------------- */
 settings.put('/admin', authMiddleware, requireAdmin, async (c) => {
@@ -86,15 +128,26 @@ settings.put('/admin', authMiddleware, requireAdmin, async (c) => {
       codCharge: 'cod_charge',
       codAvailable: 'cod_available',
       minOrderValue: 'min_order_value',
+      deliveryDaysMin: 'delivery_days_min',
+      deliveryDaysMax: 'delivery_days_max',
+      cutOffTime: 'cut_off_time',
+      warehousePincode: 'warehouse_pincode',
+      warehouseCity: 'warehouse_city',
+      warehouseState: 'warehouse_state',
+      freeShippingEnabled: 'free_shipping_enabled',
     };
 
     const updates = [];
 
     for (const [frontendKey, dbKey] of Object.entries(keyMap)) {
       if (body[frontendKey] !== undefined) {
-        const val = typeof body[frontendKey] === 'boolean'
-          ? String(body[frontendKey])
-          : String(body[frontendKey]);
+        // Boolean → 'true'/'false' string, warna string
+        let val;
+        if (typeof body[frontendKey] === 'boolean') {
+          val = body[frontendKey] ? 'true' : 'false';
+        } else {
+          val = String(body[frontendKey]);
+        }
         updates.push({ key: dbKey, value: val });
       }
     }
@@ -113,16 +166,12 @@ settings.put('/admin', authMiddleware, requireAdmin, async (c) => {
 
     // Return updated settings
     const map = await getAllSettings(c.env.DB);
+    const config = buildShippingConfig(map);
 
     return ok(c, {
+      ...DEFAULTS,
       ...map,
-      freeShippingThreshold: toNumber(map.free_shipping_threshold, 499),
-      shippingCharge: toNumber(map.shipping_charge, 49),
-      expressShippingCharge: toNumber(map.express_shipping_charge, 99),
-      taxPercent: toNumber(map.tax_percent, 5),
-      codCharge: toNumber(map.cod_charge, 0),
-      codAvailable: toBool(map.cod_available, true),
-      minOrderValue: toNumber(map.min_order_value, 0),
+      parsed: config,
     });
   } catch (err) {
     console.error('Update settings error:', err);
@@ -131,18 +180,11 @@ settings.put('/admin', authMiddleware, requireAdmin, async (c) => {
 });
 
 /* --------------------------------------------------------------------- */
-/* HELPER — reusable for orders.js                                        */
+/* HELPER — reusable for orders.js, shipping.js                           */
 /* --------------------------------------------------------------------- */
 export async function getShippingConfig(db) {
   const map = await getAllSettings(db);
-  return {
-    freeShippingThreshold: toNumber(map.free_shipping_threshold, 499),
-    shippingCharge: toNumber(map.shipping_charge, 49),
-    taxPercent: toNumber(map.tax_percent, 5),
-    codCharge: toNumber(map.cod_charge, 0),
-    codAvailable: toBool(map.cod_available, true),
-    minOrderValue: toNumber(map.min_order_value, 0),
-  };
+  return buildShippingConfig(map);
 }
 
 export default settings;
