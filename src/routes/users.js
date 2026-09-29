@@ -15,7 +15,7 @@ users.get('/profile', authMiddleware, async (c) => {
   try {
     const jwtUser = c.get('user');
     const user = await c.env.DB.prepare(
-      'SELECT id, name, email, phone, role, avatar, created_at FROM users WHERE id = ?'
+      'SELECT id, name, email, phone, role, avatar, gender, dob, created_at FROM users WHERE id = ?'
     )
       .bind(jwtUser.id)
       .first();
@@ -40,16 +40,18 @@ users.put('/profile', authMiddleware, async (c) => {
       name: body.name ?? existing.name,
       phone: body.phone ?? existing.phone,
       avatar: body.avatar ?? existing.avatar,
+      gender: body.gender ?? existing.gender,
+      dob: body.dob ?? existing.dob,
     };
 
     await c.env.DB.prepare(
-      `UPDATE users SET name = ?, phone = ?, avatar = ?, updated_at = datetime('now') WHERE id = ?`
+      `UPDATE users SET name = ?, phone = ?, avatar = ?, gender = ?, dob = ?, updated_at = datetime('now') WHERE id = ?`
     )
-      .bind(merged.name, merged.phone, merged.avatar, jwtUser.id)
+      .bind(merged.name, merged.phone, merged.avatar, merged.gender, merged.dob, jwtUser.id)
       .run();
 
     const updated = await c.env.DB.prepare(
-      'SELECT id, name, email, phone, role, avatar, created_at FROM users WHERE id = ?'
+      'SELECT id, name, email, phone, role, avatar, gender, dob, created_at FROM users WHERE id = ?'
     )
       .bind(jwtUser.id)
       .first();
@@ -60,7 +62,7 @@ users.put('/profile', authMiddleware, async (c) => {
   }
 });
 
-// ✅ PUT /api/users/change-password (Frontend Profile.jsx isko hit karta hai)
+// ✅ PUT /api/users/change-password
 users.put('/change-password', authMiddleware, async (c) => {
   try {
     const jwtUser = c.get('user');
@@ -97,13 +99,13 @@ users.put('/change-password', authMiddleware, async (c) => {
 /* Admin                                                                  */
 /* --------------------------------------------------------------------- */
 
-// GET /api/users - list all users (admin)
+// GET /api/users (admin)
 users.get('/', authMiddleware, requireAdmin, async (c) => {
   try {
     const { page, limit, offset } = parsePagination(c);
 
     const { results } = await c.env.DB.prepare(
-      `SELECT id, name, email, phone, role, avatar, created_at FROM users
+      `SELECT id, name, email, phone, role, avatar, gender, dob, created_at FROM users
        ORDER BY created_at DESC LIMIT ? OFFSET ?`
     )
       .bind(limit, offset)
@@ -127,7 +129,7 @@ users.get('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
     const user = await c.env.DB.prepare(
-      'SELECT id, name, email, phone, role, avatar, created_at FROM users WHERE id = ?'
+      'SELECT id, name, email, phone, role, avatar, gender, dob, created_at FROM users WHERE id = ?'
     )
       .bind(id)
       .first();
@@ -138,7 +140,7 @@ users.get('/:id', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// PUT /api/users/:id/role (admin) - e.g. promote to admin/vendor
+// PUT /api/users/:id/role (admin)
 users.put('/:id/role', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
@@ -159,7 +161,7 @@ users.put('/:id/role', authMiddleware, requireAdmin, async (c) => {
     if (result.meta?.changes === 0) return fail(c, 'User not found.', 404);
 
     const updated = await c.env.DB.prepare(
-      'SELECT id, name, email, phone, role FROM users WHERE id = ?'
+      'SELECT id, name, email, phone, role, gender, dob FROM users WHERE id = ?'
     )
       .bind(id)
       .first();
