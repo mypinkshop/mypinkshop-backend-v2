@@ -171,7 +171,9 @@ payments.post('/verify', optionalAuth, async (c) => {
 
     const data = await phonePeResponse.json().catch(() => ({}));
 
-    // ✅ COMPLETED
+    // ============================================================
+    // ✅ COMPLETED → orders: payment_status='paid', status='confirmed'
+    // ============================================================
     if (data.state === 'COMPLETED') {
       await c.env.DB.prepare(
         `UPDATE payments SET status = 'success' WHERE provider_payment_id = ?`
@@ -180,7 +182,7 @@ payments.post('/verify', optionalAuth, async (c) => {
         .run();
 
       const payment = await c.env.DB.prepare(
-        'SELECT * FROM payments WHERE provider_payment_id = ?'
+        'SELECT order_id FROM payments WHERE provider_payment_id = ?'
       )
         .bind(merchantTransactionId)
         .first();
@@ -190,8 +192,14 @@ payments.post('/verify', optionalAuth, async (c) => {
       let orderIdFinal = null;
       let belongsToUser = false;
 
-      if (payment) {
-        // ✅ `payment.order_id` mein `MPS-...` hai — usse order dhundho
+      if (payment && payment.order_id) {
+        // ✅ Order status update karo
+        await c.env.DB.prepare(
+          `UPDATE orders SET payment_status = 'paid', status = 'confirmed', updated_at = datetime('now') WHERE order_number = ?`
+        )
+          .bind(payment.order_id)
+          .run();
+
         const order = await c.env.DB.prepare(
           'SELECT order_number, total_amount, user_id FROM orders WHERE order_number = ?'
         )
@@ -199,18 +207,8 @@ payments.post('/verify', optionalAuth, async (c) => {
           .first();
 
         if (order) {
-          // ✅ Order status update karo
-          await c.env.DB.prepare(
-            `UPDATE orders SET payment_status = 'paid', status = 'confirmed', updated_at = datetime('now') WHERE order_number = ?`
-          )
-            .bind(order.order_number)
-            .run();
-
           orderIdFinal = order.order_number;
-
-          belongsToUser = !!(
-            requestUser && order.user_id === requestUser.id
-          );
+          belongsToUser = !!(requestUser && order.user_id === requestUser.id);
 
           if (belongsToUser) {
             orderNumber = order.order_number;
@@ -229,13 +227,34 @@ payments.post('/verify', optionalAuth, async (c) => {
       });
     }
 
-    // ❌ FAILED
+    // ============================================================
+    // ❌ FAILED → orders: payment_status='failed' (status pending rehta hai)
+    // ✅ FIX: Ab orders table bhi update hoga
+    // ============================================================
     if (data.state === 'FAILED') {
       await c.env.DB.prepare(
         `UPDATE payments SET status = 'failed' WHERE provider_payment_id = ?`
       )
         .bind(merchantTransactionId)
         .run();
+
+      // ✅ orders table me payment_status = 'failed' set karo
+      const payment = await c.env.DB.prepare(
+        'SELECT order_id FROM payments WHERE provider_payment_id = ?'
+      )
+        .bind(merchantTransactionId)
+        .first();
+
+      if (payment && payment.order_id) {
+        await c.env.DB.prepare(
+          `UPDATE orders SET 
+            payment_status = 'failed',
+            updated_at = datetime('now')
+          WHERE order_number = ?`
+        )
+          .bind(payment.order_id)
+          .run();
+      }
 
       return ok(c, {
         verified: false,
@@ -257,6 +276,7 @@ payments.post('/verify', optionalAuth, async (c) => {
 
 // ============================================================
 // ✅ POST /api/payments/webhook
+// ✅ FIX: FAILED case bhi handle karo
 // ============================================================
 payments.post('/webhook', async (c) => {
   try {
@@ -279,9 +299,16 @@ payments.post('/webhook', async (c) => {
       event.payload?.merchantOrderId ||
       event.payload?.merchantTransactionId;
 
+    if (!orderIdFromEvent) {
+      return ok(c, { received: true, skipped: true });
+    }
+
+    // ============================================================
+    // ✅ SUCCESS → orders: paid + confirmed
+    // ============================================================
     if (
-      orderIdFromEvent &&
-      (event.type === 'PAYMENT_SUCCESS' || event.state === 'COMPLETED')
+      event.type === 'PAYMENT_SUCCESS' ||
+      event.state === 'COMPLETED'
     ) {
       await c.env.DB.prepare(
         `UPDATE payments SET status = 'success' WHERE provider_payment_id = ?`
@@ -290,15 +317,46 @@ payments.post('/webhook', async (c) => {
         .run();
 
       const payment = await c.env.DB.prepare(
-        'SELECT * FROM payments WHERE provider_payment_id = ?'
+        'SELECT order_id FROM payments WHERE provider_payment_id = ?'
       )
         .bind(orderIdFromEvent)
         .first();
 
-      if (payment) {
-        // ✅ `payment.order_id` mein `MPS-...` hai
+      if (payment && payment.order_id) {
         await c.env.DB.prepare(
           `UPDATE orders SET payment_status = 'paid', status = 'confirmed', updated_at = datetime('now') WHERE order_number = ?`
+        )
+          .bind(payment.order_id)
+          .run();
+      }
+    }
+
+    // ============================================================
+    // ❌ FAILED → orders: payment_status='failed' (status pending)
+    // ✅ FIX: Ab ye case bhi handle hoga
+    // ============================================================
+    if (
+      event.type === 'PAYMENT_FAILED' ||
+      event.state === 'FAILED'
+    ) {
+      await c.env.DB.prepare(
+        `UPDATE payments SET status = 'failed' WHERE provider_payment_id = ?`
+      )
+        .bind(orderIdFromEvent)
+        .run();
+
+      const payment = await c.env.DB.prepare(
+        'SELECT order_id FROM payments WHERE provider_payment_id = ?'
+      )
+        .bind(orderIdFromEvent)
+        .first();
+
+      if (payment && payment.order_id) {
+        await c.env.DB.prepare(
+          `UPDATE orders SET 
+            payment_status = 'failed',
+            updated_at = datetime('now')
+          WHERE order_number = ?`
         )
           .bind(payment.order_id)
           .run();
