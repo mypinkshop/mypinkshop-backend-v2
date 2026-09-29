@@ -32,6 +32,7 @@ import categoriesRouter from './routes/categories';
 import adminPaymentsRouter from './routes/adminPayments';
 import brands from './routes/brands.js';
 import sitemap from './routes/sitemap.js';
+import settingsRoutes from './routes/settings.js';
 
 
 
@@ -140,6 +141,7 @@ app.route('/api/returns', returnsRoutes);
 app.route('/api/orders/returns', returnsRoutes);
 app.route('/api/categories', categoriesRouter);
 app.route('/api/admin', adminPaymentsRouter);
+app.route('/api/settings', settingsRoutes);
 app.route('/api/brands', brands);
 app.route('/', sitemap);
 
