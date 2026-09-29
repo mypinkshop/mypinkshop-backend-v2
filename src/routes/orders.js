@@ -8,6 +8,13 @@ const orders = new Hono();
 const VALID_STATUSES = ['pending', 'processing', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'];
 const SHIPROCKET_BASE_URL = 'https://apiv2.shiprocket.in/v1/external';
 
+/* --------------------------------------------------------------------- */
+/* Constants — keep in sync with frontend                                 */
+/* --------------------------------------------------------------------- */
+const FREE_SHIPPING_THRESHOLD = 499;
+const SHIPPING_CHARGE = 49;
+const TAX_PERCENT = 5; // 5%
+
 // Helper: Get Shiprocket Token
 async function getShiprocketToken(env) {
   try {
@@ -54,7 +61,6 @@ async function pushOrderToShiprocket(env, order, items, address, userEmail) {
       billing_email: userEmail || 'customer@mypinkshop.com',
       billing_phone: parsedAddress.phone || '',
       shipping_is_billing: true,
-      // ✅ Variant info Shiprocket me bhejo
       order_items: items.map(i => ({
         name: i.variant_label
           ? `${i.product_name || i.name} (${i.variant_label})`
@@ -112,9 +118,13 @@ orders.post('/', authMiddleware, async (c) => {
       subtotal += (item.price || 0) * (item.quantity || 1);
     }
 
-    const taxAmount = Math.round(subtotal * 0.05 * 100) / 100;
-    const shippingAmount = subtotal >= 499 ? 0 : 49;
-    const totalAmount = subtotal + taxAmount + shippingAmount;
+    // ✅ FIX: Use consistent constants
+    const discount = Number(body.discount) || 0;
+    const taxAmount = Math.round(subtotal * (TAX_PERCENT / 100) * 100) / 100;
+    const shippingAmount = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_CHARGE;
+
+    // ✅ FIX: Discount subtract karo
+    const totalAmount = Math.max(0, subtotal + taxAmount + shippingAmount - discount);
 
     await c.env.DB.prepare(
       `INSERT INTO orders 
@@ -129,7 +139,7 @@ orders.post('/', authMiddleware, async (c) => {
         subtotal,
         taxAmount,
         shippingAmount,
-        body.discount || 0,
+        discount,
         totalAmount,
         body.paymentMethod || 'cod',
         JSON.stringify(body.address)
@@ -150,7 +160,6 @@ orders.post('/', authMiddleware, async (c) => {
         }
       } catch (e) {}
 
-      // ✅ Variant fields extract karo
       const variantId = item.variantId || null;
       const variantSku = item.variantSku || null;
       const size = item.size || null;
@@ -203,7 +212,7 @@ orders.post('/create', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
     const body = await c.req.json().catch(() => ({}));
-    const { items, shippingAddress, paymentMethod = 'cod' } = body;
+    const { items, shippingAddress, paymentMethod = 'cod', discount = 0 } = body;
 
     if (!Array.isArray(items) || items.length === 0) {
       return fail(c, 'items must be a non-empty array of { productId, quantity }.', 400);
@@ -216,7 +225,6 @@ orders.post('/create', authMiddleware, async (c) => {
     const resolvedItems = [];
 
     for (const item of items) {
-      // ✅ Variant fields
       const variantId = item.variantId || null;
       const variantSku = item.variantSku || null;
       const size = item.size || null;
@@ -228,7 +236,6 @@ orders.post('/create', authMiddleware, async (c) => {
       let product = null;
       let resolvedPrice = 0;
 
-      // ✅ Variant diya hai to variant ka stock check karo
       if (variantId) {
         const variant = await c.env.DB.prepare(
           'SELECT * FROM product_variants WHERE id = ? AND product_id = ?'
@@ -277,18 +284,21 @@ orders.post('/create', authMiddleware, async (c) => {
       });
     }
 
-    const taxAmount = Math.round(subtotal * 0.05 * 100) / 100;
-    const shippingAmount = subtotal >= 999 ? 0 : 79;
-    const totalAmount = subtotal + taxAmount + shippingAmount;
+    // ✅ FIX: Consistent constants + discount subtract
+    const discountAmt = Number(discount) || 0;
+    const taxAmount = Math.round(subtotal * (TAX_PERCENT / 100) * 100) / 100;
+    const shippingAmount = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_CHARGE;
+    const totalAmount = Math.max(0, subtotal + taxAmount + shippingAmount - discountAmt);
 
     const orderId = genId('order');
     const orderNumber = genOrderNumber();
 
+    // ✅ FIX: discount_amount bhi save karo
     await c.env.DB.prepare(
       `INSERT INTO orders
         (id, user_id, order_number, status, subtotal, tax_amount, shipping_amount, discount_amount,
          total_amount, payment_status, payment_method, shipping_address, created_at, updated_at)
-        VALUES (?, ?, ?, 'pending', ?, ?, ?, 0, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
     )
       .bind(
         orderId,
@@ -297,6 +307,7 @@ orders.post('/create', authMiddleware, async (c) => {
         subtotal,
         taxAmount,
         shippingAmount,
+        discountAmt,
         totalAmount,
         paymentMethod,
         JSON.stringify(shippingAddress)
@@ -317,7 +328,6 @@ orders.post('/create', authMiddleware, async (c) => {
         )
         .run();
 
-      // ✅ Stock update — variant diya to variant ka, warna product ka
       if (item.variantId) {
         await c.env.DB.prepare('UPDATE product_variants SET stock = MAX(0, stock - ?) WHERE id = ?')
           .bind(item.quantity, item.variantId)
@@ -453,7 +463,6 @@ const cancelOrderHandler = async (c) => {
       return fail(c, 'Only pending, processing or confirmed orders can be cancelled.', 400);
     }
 
-    // ✅ Stock wapas karo
     const { results: items } = await c.env.DB.prepare(
       'SELECT * FROM order_items WHERE order_id = ?'
     ).bind(id).all();
@@ -609,7 +618,7 @@ const updateStatusHandler = async (c) => {
     const updated = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
     return ok(c, updated);
   } catch (err) {
-    return fail(c, `Failed to update order status: ${err.message}`, 500);
+    return fail(c, `Failed to update order: ${err.message}`, 500);
   }
 };
 
