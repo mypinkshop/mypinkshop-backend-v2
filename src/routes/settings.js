@@ -5,9 +5,6 @@ import { ok, fail } from '../lib/utils.js';
 
 const settings = new Hono();
 
-/* --------------------------------------------------------------------- */
-/* Defaults — agar DB me value missing ho to ye use hoga                 */
-/* --------------------------------------------------------------------- */
 const DEFAULTS = {
   free_shipping_threshold: 499,
   shipping_charge: 49,
@@ -23,11 +20,10 @@ const DEFAULTS = {
   warehouse_city: 'Mumbai',
   warehouse_state: 'Maharashtra',
   free_shipping_enabled: true,
+  express_shipping_enabled: true,
+  payment_methods: 'cod,upi,card,netbanking',
 };
 
-/* --------------------------------------------------------------------- */
-/* Helper — fetch all settings from DB                                    */
-/* --------------------------------------------------------------------- */
 async function getAllSettings(db) {
   try {
     const { results } = await db.prepare('SELECT key, value FROM settings').all();
@@ -42,9 +38,6 @@ async function getAllSettings(db) {
   }
 }
 
-/* --------------------------------------------------------------------- */
-/* Helper — safe type conversion                                          */
-/* --------------------------------------------------------------------- */
 function toNumber(val, fallback = 0) {
   if (val === undefined || val === null || val === '') return fallback;
   const n = parseFloat(val);
@@ -53,12 +46,11 @@ function toNumber(val, fallback = 0) {
 
 function toBool(val, fallback = false) {
   if (val === undefined || val === null) return fallback;
-  return val === 'true' || val === '1' || val === true;
+  if (val === true || val === 'true' || val === '1' || val === 1) return true;
+  if (val === false || val === 'false' || val === '0' || val === 0) return false;
+  return fallback;
 }
 
-/* --------------------------------------------------------------------- */
-/* Helper — build public config (single source of truth)                  */
-/* --------------------------------------------------------------------- */
 export function buildShippingConfig(map) {
   return {
     freeShippingThreshold: toNumber(map.free_shipping_threshold, DEFAULTS.free_shipping_threshold),
@@ -75,13 +67,15 @@ export function buildShippingConfig(map) {
     warehouseCity: map.warehouse_city || DEFAULTS.warehouse_city,
     warehouseState: map.warehouse_state || DEFAULTS.warehouse_state,
     freeShippingEnabled: toBool(map.free_shipping_enabled, DEFAULTS.free_shipping_enabled),
+    expressShippingEnabled: toBool(map.express_shipping_enabled, DEFAULTS.express_shipping_enabled),
+    paymentMethods: (map.payment_methods || DEFAULTS.payment_methods)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
   };
 }
 
-/* --------------------------------------------------------------------- */
-/* PUBLIC — GET /api/settings/public                                      */
-/* Frontend (Cart, Checkout) use karega                                  */
-/* --------------------------------------------------------------------- */
+/* PUBLIC — GET /api/settings/public */
 settings.get('/public', async (c) => {
   try {
     const map = await getAllSettings(c.env.DB);
@@ -92,18 +86,14 @@ settings.get('/public', async (c) => {
   }
 });
 
-/* --------------------------------------------------------------------- */
-/* ADMIN — GET /api/settings/admin                                        */
-/* --------------------------------------------------------------------- */
+/* ADMIN — GET /api/settings/admin */
 settings.get('/admin', authMiddleware, requireAdmin, async (c) => {
   try {
     const map = await getAllSettings(c.env.DB);
     const config = buildShippingConfig(map);
     return ok(c, {
-      // Raw values (snake_case) — admin panel ke form ke liye
       ...DEFAULTS,
       ...map,
-      // Parsed values (camelCase) — preview ke liye
       parsed: config,
     });
   } catch (err) {
@@ -111,15 +101,11 @@ settings.get('/admin', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-/* --------------------------------------------------------------------- */
-/* ADMIN — PUT /api/settings/admin                                        */
-/* Body: { freeShippingThreshold: 499, shippingCharge: 49, ... }          */
-/* --------------------------------------------------------------------- */
+/* ADMIN — PUT /api/settings/admin */
 settings.put('/admin', authMiddleware, requireAdmin, async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}));
 
-    // Map frontend keys → DB keys
     const keyMap = {
       freeShippingThreshold: 'free_shipping_threshold',
       shippingCharge: 'shipping_charge',
@@ -135,16 +121,19 @@ settings.put('/admin', authMiddleware, requireAdmin, async (c) => {
       warehouseCity: 'warehouse_city',
       warehouseState: 'warehouse_state',
       freeShippingEnabled: 'free_shipping_enabled',
+      expressShippingEnabled: 'express_shipping_enabled',
+      paymentMethods: 'payment_methods',
     };
 
     const updates = [];
 
     for (const [frontendKey, dbKey] of Object.entries(keyMap)) {
       if (body[frontendKey] !== undefined) {
-        // Boolean → 'true'/'false' string, warna string
         let val;
         if (typeof body[frontendKey] === 'boolean') {
           val = body[frontendKey] ? 'true' : 'false';
+        } else if (Array.isArray(body[frontendKey])) {
+          val = body[frontendKey].join(',');
         } else {
           val = String(body[frontendKey]);
         }
@@ -156,7 +145,6 @@ settings.put('/admin', authMiddleware, requireAdmin, async (c) => {
       return fail(c, 'No valid settings to update', 400);
     }
 
-    // Upsert each setting
     for (const { key, value } of updates) {
       await c.env.DB.prepare(
         `INSERT OR REPLACE INTO settings (key, value, updated_at)
@@ -164,7 +152,6 @@ settings.put('/admin', authMiddleware, requireAdmin, async (c) => {
       ).bind(key, value).run();
     }
 
-    // Return updated settings
     const map = await getAllSettings(c.env.DB);
     const config = buildShippingConfig(map);
 
@@ -179,9 +166,7 @@ settings.put('/admin', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-/* --------------------------------------------------------------------- */
-/* HELPER — reusable for orders.js, shipping.js                           */
-/* --------------------------------------------------------------------- */
+/* HELPER */
 export async function getShippingConfig(db) {
   const map = await getAllSettings(db);
   return buildShippingConfig(map);
