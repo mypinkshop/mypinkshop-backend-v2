@@ -9,9 +9,7 @@ const orders = new Hono();
 const VALID_STATUSES = ['pending', 'processing', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'];
 const SHIPROCKET_BASE_URL = 'https://apiv2.shiprocket.in/v1/external';
 
-/* --------------------------------------------------------------------- */
-/* Helper: Get Shiprocket Token                                          */
-/* --------------------------------------------------------------------- */
+/* Shiprocket Token */
 async function getShiprocketToken(env) {
   try {
     const email = env?.SHIPROCKET_EMAIL;
@@ -32,14 +30,12 @@ async function getShiprocketToken(env) {
   }
 }
 
-/* --------------------------------------------------------------------- */
-/* Helper: Push Order to Shiprocket                                      */
-/* --------------------------------------------------------------------- */
+/* Push order to Shiprocket */
 async function pushOrderToShiprocket(env, order, items, address, userEmail) {
   try {
     const token = await getShiprocketToken(env);
     if (!token) {
-      console.warn('Shiprocket token skipped: credentials missing or auth failed.');
+      console.warn('Shiprocket token skipped: credentials missing.');
       return;
     }
 
@@ -59,26 +55,26 @@ async function pushOrderToShiprocket(env, order, items, address, userEmail) {
       billing_email: userEmail || 'customer@mypinkshop.com',
       billing_phone: parsedAddress.phone || '',
       shipping_is_billing: true,
-      order_items: items.map(i => ({
+      order_items: items.map((i) => ({
         name: i.variant_label
           ? `${i.product_name || i.name} (${i.variant_label})`
-          : (i.product_name || i.name),
+          : i.product_name || i.name,
         sku: i.variant_sku || i.variantSku || i.product_id || i.productId || 'SKU01',
         units: i.quantity || 1,
-        selling_price: i.price || 0
+        selling_price: i.price || 0,
       })),
       payment_method: order.payment_method === 'cod' ? 'COD' : 'Prepaid',
       sub_total: order.subtotal || order.total_amount,
       length: 10,
       breadth: 10,
       height: 10,
-      weight: 0.5
+      weight: 0.5,
     };
 
     const srRes = await fetch(`${SHIPROCKET_BASE_URL}/orders/create/adhoc`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
@@ -91,18 +87,23 @@ async function pushOrderToShiprocket(env, order, items, address, userEmail) {
   }
 }
 
-/* --------------------------------------------------------------------- */
-/* Helper: Calculate totals from settings                               */
-/* --------------------------------------------------------------------- */
-async function calculateTotals(db, subtotal, discount = 0, paymentMethod = 'cod') {
+/* Totals with express support */
+async function calculateTotals(db, subtotal, discount = 0, paymentMethod = 'cod', shippingType = 'standard') {
   const config = await getShippingConfig(db);
 
   const discountAmt = Math.max(0, Number(discount) || 0);
   const taxAmount = Math.round(subtotal * (config.taxPercent / 100) * 100) / 100;
-  const shippingAmount = subtotal >= config.freeShippingThreshold ? 0 : config.shippingCharge;
 
-  // COD charge — only if COD and codCharge > 0
-  const codCharge = (paymentMethod === 'cod' && config.codCharge > 0) ? config.codCharge : 0;
+  let shippingAmount = 0;
+  if (config.freeShippingEnabled && subtotal >= config.freeShippingThreshold) {
+    shippingAmount = 0;
+  } else if (shippingType === 'express' && config.expressShippingEnabled) {
+    shippingAmount = config.expressShippingCharge || config.shippingCharge;
+  } else {
+    shippingAmount = config.shippingCharge;
+  }
+
+  const codCharge = paymentMethod === 'cod' && config.codCharge > 0 ? config.codCharge : 0;
 
   const totalAmount = Math.max(0, subtotal + taxAmount + shippingAmount + codCharge - discountAmt);
 
@@ -113,13 +114,12 @@ async function calculateTotals(db, subtotal, discount = 0, paymentMethod = 'cod'
     codCharge,
     discountAmount: discountAmt,
     totalAmount,
+    shippingType,
     config,
   };
 }
 
-/* --------------------------------------------------------------------- */
-/* Customer — POST /api/orders                                          */
-/* --------------------------------------------------------------------- */
+/* POST /api/orders — direct order (price from body) */
 orders.post('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -140,19 +140,21 @@ orders.post('/', authMiddleware, async (c) => {
       subtotal += (item.price || 0) * (item.quantity || 1);
     }
 
-    // ✅ Settings se calculate
+    const shippingType = body.shippingType === 'express' ? 'express' : 'standard';
+
     const totals = await calculateTotals(
       c.env.DB,
       subtotal,
       body.discount || 0,
-      body.paymentMethod || 'cod'
+      body.paymentMethod || 'cod',
+      shippingType
     );
 
     await c.env.DB.prepare(
-      `INSERT INTO orders 
+      `INSERT INTO orders
         (id, user_id, order_number, status, subtotal, tax_amount, shipping_amount, discount_amount,
-         total_amount, payment_status, payment_method, shipping_address, created_at, updated_at)
-        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
+         total_amount, payment_status, payment_method, shipping_type, shipping_address, created_at, updated_at)
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'), datetime('now'))`
     )
       .bind(
         id,
@@ -164,6 +166,7 @@ orders.post('/', authMiddleware, async (c) => {
         totals.discountAmount,
         totals.totalAmount,
         body.paymentMethod || 'cod',
+        shippingType,
         JSON.stringify(body.address)
       )
       .run();
@@ -177,9 +180,7 @@ orders.post('/', authMiddleware, async (c) => {
       let itemBrand = 'Richfem';
       try {
         const prod = await c.env.DB.prepare('SELECT brand FROM products WHERE id = ?').bind(productId).first();
-        if (prod && prod.brand) {
-          itemBrand = prod.brand;
-        }
+        if (prod && prod.brand) itemBrand = prod.brand;
       } catch (e) {}
 
       const variantId = item.variantId || null;
@@ -191,7 +192,7 @@ orders.post('/', authMiddleware, async (c) => {
       const variantLabel = item.variantLabel || null;
 
       await c.env.DB.prepare(
-        `INSERT INTO order_items 
+        `INSERT INTO order_items
           (id, order_id, product_id, product_name, price, quantity, subtotal, brand,
            variant_id, variant_sku, size, color, option1_name, option2_name, variant_label)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -211,8 +212,8 @@ orders.post('/', authMiddleware, async (c) => {
         brand: itemBrand,
         variant_id: variantId,
         variant_sku: variantSku,
-        size: size,
-        color: color,
+        size,
+        color,
         option1_name: option1Name,
         option2_name: option2Name,
         variant_label: variantLabel,
@@ -229,14 +230,12 @@ orders.post('/', authMiddleware, async (c) => {
   }
 });
 
-/* --------------------------------------------------------------------- */
-/* Customer — POST /api/orders/create                                   */
-/* --------------------------------------------------------------------- */
+/* POST /api/orders/create — secure (price from DB) */
 orders.post('/create', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
     const body = await c.req.json().catch(() => ({}));
-    const { items, shippingAddress, paymentMethod = 'cod', discount = 0 } = body;
+    const { items, shippingAddress, paymentMethod = 'cod', discount = 0, shippingType = 'standard' } = body;
 
     if (!Array.isArray(items) || items.length === 0) {
       return fail(c, 'items must be a non-empty array of { productId, quantity }.', 400);
@@ -308,8 +307,8 @@ orders.post('/create', authMiddleware, async (c) => {
       });
     }
 
-    // ✅ Settings se calculate
-    const totals = await calculateTotals(c.env.DB, subtotal, discount, paymentMethod);
+    const normalizedShippingType = shippingType === 'express' ? 'express' : 'standard';
+    const totals = await calculateTotals(c.env.DB, subtotal, discount, paymentMethod, normalizedShippingType);
 
     const orderId = genId('order');
     const orderNumber = genOrderNumber();
@@ -317,8 +316,8 @@ orders.post('/create', authMiddleware, async (c) => {
     await c.env.DB.prepare(
       `INSERT INTO orders
         (id, user_id, order_number, status, subtotal, tax_amount, shipping_amount, discount_amount,
-         total_amount, payment_status, payment_method, shipping_address, created_at, updated_at)
-        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), datetime('now'))`
+         total_amount, payment_status, payment_method, shipping_type, shipping_address, created_at, updated_at)
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'), datetime('now'))`
     )
       .bind(
         orderId,
@@ -330,6 +329,7 @@ orders.post('/create', authMiddleware, async (c) => {
         totals.discountAmount,
         totals.totalAmount,
         paymentMethod,
+        normalizedShippingType,
         JSON.stringify(shippingAddress)
       )
       .run();
@@ -337,7 +337,7 @@ orders.post('/create', authMiddleware, async (c) => {
     for (const item of resolvedItems) {
       const itemId = genId('oi');
       await c.env.DB.prepare(
-        `INSERT INTO order_items 
+        `INSERT INTO order_items
           (id, order_id, product_id, product_name, price, quantity, subtotal, brand,
            variant_id, variant_sku, size, color, option1_name, option2_name, variant_label)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -378,9 +378,7 @@ orders.post('/create', authMiddleware, async (c) => {
   }
 });
 
-/* --------------------------------------------------------------------- */
-/* Customer — GET /api/orders/my-orders                                 */
-/* --------------------------------------------------------------------- */
+/* GET /api/orders/my-orders */
 orders.get('/my-orders', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -407,9 +405,7 @@ orders.get('/my-orders', authMiddleware, async (c) => {
   }
 });
 
-/* --------------------------------------------------------------------- */
-/* Customer — GET /api/orders/user                                      */
-/* --------------------------------------------------------------------- */
+/* GET /api/orders/user */
 orders.get('/user', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -423,9 +419,9 @@ orders.get('/user', authMiddleware, async (c) => {
       const orderIds = userOrders.map((o) => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
       const { results: allItems } = await c.env.DB.prepare(
-        `SELECT oi.*, p.images as product_images, p.brand as product_brand 
-         FROM order_items oi 
-         LEFT JOIN products p ON oi.product_id = p.id 
+        `SELECT oi.*, p.images as product_images, p.brand as product_brand
+         FROM order_items oi
+         LEFT JOIN products p ON oi.product_id = p.id
          WHERE oi.order_id IN (${placeholders})`
       ).bind(...orderIds).all();
 
@@ -438,7 +434,7 @@ orders.get('/user', authMiddleware, async (c) => {
           variantLabel: item.variant_label,
           option1Name: item.option1_name,
           option2Name: item.option2_name,
-          brand: item.brand || item.product_brand || 'Richfem'
+          brand: item.brand || item.product_brand || 'Richfem',
         });
       }
       for (const order of userOrders) {
@@ -446,7 +442,7 @@ orders.get('/user', authMiddleware, async (c) => {
       }
     }
 
-    const formattedOrders = (userOrders || []).map(order => {
+    const formattedOrders = (userOrders || []).map((order) => {
       const createdAt = order.created_at;
       const formattedDate = createdAt
         ? new Date(createdAt.replace(' ', 'T') + 'Z').toISOString()
@@ -455,13 +451,10 @@ orders.get('/user', authMiddleware, async (c) => {
       return {
         ...order,
         created_at: formattedDate,
-        items: (order.items || []).map(item => {
+        items: (order.items || []).map((item) => {
           const images = safeJsonArray(item.product_images);
-          return {
-            ...item,
-            image: item.image || images[0] || null
-          };
-        })
+          return { ...item, image: item.image || images[0] || null };
+        }),
       };
     });
 
@@ -471,9 +464,7 @@ orders.get('/user', authMiddleware, async (c) => {
   }
 });
 
-/* --------------------------------------------------------------------- */
-/* Customer — PUT/PATCH /api/orders/:id/cancel                          */
-/* --------------------------------------------------------------------- */
+/* Cancel order */
 const cancelOrderHandler = async (c) => {
   try {
     const user = c.get('user');
@@ -515,9 +506,7 @@ const cancelOrderHandler = async (c) => {
 orders.put('/:id/cancel', authMiddleware, cancelOrderHandler);
 orders.patch('/:id/cancel', authMiddleware, cancelOrderHandler);
 
-/* --------------------------------------------------------------------- */
-/* Admin — GET /api/orders/all                                          */
-/* --------------------------------------------------------------------- */
+/* Admin — GET /api/orders/all */
 orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   try {
     const url = new URL(c.req.url);
@@ -534,7 +523,7 @@ orders.get('/all', authMiddleware, requireAdmin, async (c) => {
     ).bind(limit, offset).all();
 
     if (ordersList && ordersList.length > 0) {
-      const orderIds = ordersList.map(o => o.id);
+      const orderIds = ordersList.map((o) => o.id);
       const placeholders = orderIds.map(() => '?').join(',');
 
       const { results: allItems } = await c.env.DB.prepare(
@@ -550,7 +539,7 @@ orders.get('/all', authMiddleware, requireAdmin, async (c) => {
           variantLabel: item.variant_label,
           option1Name: item.option1_name,
           option2Name: item.option2_name,
-          brand: item.brand || item.product_brand || 'Richfem'
+          brand: item.brand || item.product_brand || 'Richfem',
         });
       }
       for (const order of ordersList) {
@@ -565,9 +554,7 @@ orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-/* --------------------------------------------------------------------- */
-/* Admin — GET /api/orders/:id                                          */
-/* --------------------------------------------------------------------- */
+/* Admin — GET /api/orders/:id */
 orders.get('/:id', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -584,14 +571,14 @@ orders.get('/:id', authMiddleware, async (c) => {
       `SELECT oi.*, p.brand as product_brand FROM order_items oi LEFT JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?`
     ).bind(id).all();
 
-    const formattedItems = (items || []).map(i => ({
+    const formattedItems = (items || []).map((i) => ({
       ...i,
       variantId: i.variant_id,
       variantSku: i.variant_sku,
       variantLabel: i.variant_label,
       option1Name: i.option1_name,
       option2Name: i.option2_name,
-      brand: i.brand || i.product_brand || 'Richfem'
+      brand: i.brand || i.product_brand || 'Richfem',
     }));
 
     return ok(c, { ...order, items: formattedItems });
@@ -600,9 +587,7 @@ orders.get('/:id', authMiddleware, async (c) => {
   }
 });
 
-/* --------------------------------------------------------------------- */
-/* Admin — PUT /api/orders/:id (Full edit)                              */
-/* --------------------------------------------------------------------- */
+/* Admin — PUT /api/orders/:id */
 orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
@@ -627,9 +612,7 @@ orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-/* --------------------------------------------------------------------- */
-/* Admin — PUT/PATCH /api/orders/:id/status                             */
-/* --------------------------------------------------------------------- */
+/* Admin — status update */
 const updateStatusHandler = async (c) => {
   try {
     const id = c.req.param('id');
