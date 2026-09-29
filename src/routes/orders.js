@@ -2,6 +2,7 @@
 import { Hono } from 'hono';
 import { authMiddleware, requireAdmin } from './auth.js';
 import { ok, fail, genId, genOrderNumber, parsePagination, safeJsonArray } from '../lib/utils.js';
+import { getShippingConfig } from './settings.js';
 
 const orders = new Hono();
 
@@ -9,13 +10,8 @@ const VALID_STATUSES = ['pending', 'processing', 'confirmed', 'shipped', 'delive
 const SHIPROCKET_BASE_URL = 'https://apiv2.shiprocket.in/v1/external';
 
 /* --------------------------------------------------------------------- */
-/* Constants — keep in sync with frontend                                 */
+/* Helper: Get Shiprocket Token                                          */
 /* --------------------------------------------------------------------- */
-const FREE_SHIPPING_THRESHOLD = 499;
-const SHIPPING_CHARGE = 49;
-const TAX_PERCENT = 5; // 5%
-
-// Helper: Get Shiprocket Token
 async function getShiprocketToken(env) {
   try {
     const email = env?.SHIPROCKET_EMAIL;
@@ -36,7 +32,9 @@ async function getShiprocketToken(env) {
   }
 }
 
-// Helper: Push Order to Shiprocket
+/* --------------------------------------------------------------------- */
+/* Helper: Push Order to Shiprocket                                      */
+/* --------------------------------------------------------------------- */
 async function pushOrderToShiprocket(env, order, items, address, userEmail) {
   try {
     const token = await getShiprocketToken(env);
@@ -94,10 +92,34 @@ async function pushOrderToShiprocket(env, order, items, address, userEmail) {
 }
 
 /* --------------------------------------------------------------------- */
-/* Customer                                                              */
+/* Helper: Calculate totals from settings                               */
 /* --------------------------------------------------------------------- */
+async function calculateTotals(db, subtotal, discount = 0, paymentMethod = 'cod') {
+  const config = await getShippingConfig(db);
 
-// ✅ POST /api/orders - Create new order with variant info
+  const discountAmt = Math.max(0, Number(discount) || 0);
+  const taxAmount = Math.round(subtotal * (config.taxPercent / 100) * 100) / 100;
+  const shippingAmount = subtotal >= config.freeShippingThreshold ? 0 : config.shippingCharge;
+
+  // COD charge — only if COD and codCharge > 0
+  const codCharge = (paymentMethod === 'cod' && config.codCharge > 0) ? config.codCharge : 0;
+
+  const totalAmount = Math.max(0, subtotal + taxAmount + shippingAmount + codCharge - discountAmt);
+
+  return {
+    subtotal,
+    taxAmount,
+    shippingAmount,
+    codCharge,
+    discountAmount: discountAmt,
+    totalAmount,
+    config,
+  };
+}
+
+/* --------------------------------------------------------------------- */
+/* Customer — POST /api/orders                                          */
+/* --------------------------------------------------------------------- */
 orders.post('/', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -118,13 +140,13 @@ orders.post('/', authMiddleware, async (c) => {
       subtotal += (item.price || 0) * (item.quantity || 1);
     }
 
-    // ✅ FIX: Use consistent constants
-    const discount = Number(body.discount) || 0;
-    const taxAmount = Math.round(subtotal * (TAX_PERCENT / 100) * 100) / 100;
-    const shippingAmount = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_CHARGE;
-
-    // ✅ FIX: Discount subtract karo
-    const totalAmount = Math.max(0, subtotal + taxAmount + shippingAmount - discount);
+    // ✅ Settings se calculate
+    const totals = await calculateTotals(
+      c.env.DB,
+      subtotal,
+      body.discount || 0,
+      body.paymentMethod || 'cod'
+    );
 
     await c.env.DB.prepare(
       `INSERT INTO orders 
@@ -136,11 +158,11 @@ orders.post('/', authMiddleware, async (c) => {
         id,
         user.id,
         orderNumber,
-        subtotal,
-        taxAmount,
-        shippingAmount,
-        discount,
-        totalAmount,
+        totals.subtotal,
+        totals.taxAmount,
+        totals.shippingAmount,
+        totals.discountAmount,
+        totals.totalAmount,
         body.paymentMethod || 'cod',
         JSON.stringify(body.address)
       )
@@ -207,7 +229,9 @@ orders.post('/', authMiddleware, async (c) => {
   }
 });
 
-// POST /api/orders/create
+/* --------------------------------------------------------------------- */
+/* Customer — POST /api/orders/create                                   */
+/* --------------------------------------------------------------------- */
 orders.post('/create', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -284,16 +308,12 @@ orders.post('/create', authMiddleware, async (c) => {
       });
     }
 
-    // ✅ FIX: Consistent constants + discount subtract
-    const discountAmt = Number(discount) || 0;
-    const taxAmount = Math.round(subtotal * (TAX_PERCENT / 100) * 100) / 100;
-    const shippingAmount = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_CHARGE;
-    const totalAmount = Math.max(0, subtotal + taxAmount + shippingAmount - discountAmt);
+    // ✅ Settings se calculate
+    const totals = await calculateTotals(c.env.DB, subtotal, discount, paymentMethod);
 
     const orderId = genId('order');
     const orderNumber = genOrderNumber();
 
-    // ✅ FIX: discount_amount bhi save karo
     await c.env.DB.prepare(
       `INSERT INTO orders
         (id, user_id, order_number, status, subtotal, tax_amount, shipping_amount, discount_amount,
@@ -304,11 +324,11 @@ orders.post('/create', authMiddleware, async (c) => {
         orderId,
         user.id,
         orderNumber,
-        subtotal,
-        taxAmount,
-        shippingAmount,
-        discountAmt,
-        totalAmount,
+        totals.subtotal,
+        totals.taxAmount,
+        totals.shippingAmount,
+        totals.discountAmount,
+        totals.totalAmount,
         paymentMethod,
         JSON.stringify(shippingAddress)
       )
@@ -358,7 +378,9 @@ orders.post('/create', authMiddleware, async (c) => {
   }
 });
 
-// GET /api/orders/my-orders
+/* --------------------------------------------------------------------- */
+/* Customer — GET /api/orders/my-orders                                 */
+/* --------------------------------------------------------------------- */
 orders.get('/my-orders', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -385,7 +407,9 @@ orders.get('/my-orders', authMiddleware, async (c) => {
   }
 });
 
-// GET /api/orders/user
+/* --------------------------------------------------------------------- */
+/* Customer — GET /api/orders/user                                      */
+/* --------------------------------------------------------------------- */
 orders.get('/user', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -447,7 +471,9 @@ orders.get('/user', authMiddleware, async (c) => {
   }
 });
 
-// PUT/PATCH /api/orders/:id/cancel
+/* --------------------------------------------------------------------- */
+/* Customer — PUT/PATCH /api/orders/:id/cancel                          */
+/* --------------------------------------------------------------------- */
 const cancelOrderHandler = async (c) => {
   try {
     const user = c.get('user');
@@ -490,10 +516,8 @@ orders.put('/:id/cancel', authMiddleware, cancelOrderHandler);
 orders.patch('/:id/cancel', authMiddleware, cancelOrderHandler);
 
 /* --------------------------------------------------------------------- */
-/* Admin                                                                 */
+/* Admin — GET /api/orders/all                                          */
 /* --------------------------------------------------------------------- */
-
-// GET /api/orders/all
 orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   try {
     const url = new URL(c.req.url);
@@ -541,6 +565,9 @@ orders.get('/all', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
+/* --------------------------------------------------------------------- */
+/* Admin — GET /api/orders/:id                                          */
+/* --------------------------------------------------------------------- */
 orders.get('/:id', authMiddleware, async (c) => {
   try {
     const user = c.get('user');
@@ -573,7 +600,9 @@ orders.get('/:id', authMiddleware, async (c) => {
   }
 });
 
-// PUT /api/orders/:id - Full Order Edit Route for Super Admin
+/* --------------------------------------------------------------------- */
+/* Admin — PUT /api/orders/:id (Full edit)                              */
+/* --------------------------------------------------------------------- */
 orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const id = c.req.param('id');
@@ -598,7 +627,9 @@ orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// PUT/PATCH /api/orders/:id/status
+/* --------------------------------------------------------------------- */
+/* Admin — PUT/PATCH /api/orders/:id/status                             */
+/* --------------------------------------------------------------------- */
 const updateStatusHandler = async (c) => {
   try {
     const id = c.req.param('id');
