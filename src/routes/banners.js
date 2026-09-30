@@ -72,7 +72,7 @@ function formatBanner(b) {
     showTextOverlay: b.show_text_overlay === 1,
     categories,
     positions,
-    subcategories,                         // ✅ NEW
+    subcategories,
     // Backward compatibility
     category: categories[0] || null,
     position: positions[0] || 'home_hero',
@@ -146,6 +146,57 @@ function intFromBody(val, defaultVal = 0) {
 }
 
 /* --------------------------------------------------------------------- */
+/* ✅ CATEGORY POSITIONS — 9 categories × 3 banners = 27 new positions   */
+/* --------------------------------------------------------------------- */
+
+const CATEGORY_POSITIONS = [
+  // Skincare
+  { value: 'skincare_mid_1',    label: '🧴 Skincare — Mid 1',    size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
+  { value: 'skincare_mid_2',    label: '🧴 Skincare — Mid 2',    size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
+  { value: 'skincare_bottom',   label: '🧴 Skincare — Bottom',   size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+
+  // Makeup
+  { value: 'makeup_mid_1',      label: '💄 Makeup — Mid 1',      size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
+  { value: 'makeup_mid_2',      label: '💄 Makeup — Mid 2',      size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
+  { value: 'makeup_bottom',     label: '💄 Makeup — Bottom',     size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+
+  // Haircare
+  { value: 'haircare_mid_1',    label: '💇‍♀️ Haircare — Mid 1',   size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
+  { value: 'haircare_mid_2',    label: '💇‍♀️ Haircare — Mid 2',   size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
+  { value: 'haircare_bottom',   label: '💇‍♀️ Haircare — Bottom',  size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+
+  // Fashion
+  { value: 'fashion_mid_1',     label: '👗 Fashion — Mid 1',     size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
+  { value: 'fashion_mid_2',     label: '👗 Fashion — Mid 2',     size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
+  { value: 'fashion_bottom',    label: '👗 Fashion — Bottom',    size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+
+  // Accessories
+  { value: 'accessories_mid_1', label: '👜 Accessories — Mid 1', size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
+  { value: 'accessories_mid_2', label: '👜 Accessories — Mid 2', size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
+  { value: 'accessories_bottom',label: '👜 Accessories — Bottom',size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+
+  // Electronics
+  { value: 'electronics_mid_1', label: '📱 Electronics — Mid 1', size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
+  { value: 'electronics_mid_2', label: '📱 Electronics — Mid 2', size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
+  { value: 'electronics_bottom',label: '📱 Electronics — Bottom',size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+
+  // Home & Kitchen
+  { value: 'home_kitchen_mid_1',    label: '🏠 Home & Kitchen — Mid 1',    size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
+  { value: 'home_kitchen_mid_2',    label: '🏠 Home & Kitchen — Mid 2',    size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
+  { value: 'home_kitchen_bottom',   label: '🏠 Home & Kitchen — Bottom',   size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+
+  // Health & Wellness
+  { value: 'health_mid_1',      label: '💊 Health — Mid 1',      size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
+  { value: 'health_mid_2',      label: '💊 Health — Mid 2',      size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
+  { value: 'health_bottom',     label: '💊 Health — Bottom',     size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+
+  // Books & Stationery
+  { value: 'books_mid_1',       label: '📚 Books — Mid 1',       size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
+  { value: 'books_mid_2',       label: '📚 Books — Mid 2',       size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
+  { value: 'books_bottom',      label: '📚 Books — Bottom',      size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+];
+
+/* --------------------------------------------------------------------- */
 /* OPTIONS                                                               */
 /* --------------------------------------------------------------------- */
 
@@ -168,12 +219,16 @@ banners.get('/options', async (c) => {
       { value: 'grid',    label: 'Grid',    hint: '2–4 side by side' },
     ],
     positions: [
-      { value: 'home_hero',       label: 'Home Hero',       size: 'full',  style: 'slide',   px: '1920×600', ratio: '16:5' },
-      { value: 'category_hero',   label: 'Category Hero',   size: 'xl',    style: 'single',  px: '1600×500', ratio: '16:5' },
-      { value: 'category_mid_1',  label: 'Mid 1',           size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
-      { value: 'category_mid_2',  label: 'Mid 2',           size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
-      { value: 'category_mid_3',  label: 'Mid 3',           size: 'large', style: 'slide',   px: '1200×400', ratio: '3:1' },
-      { value: 'category_bottom', label: 'Bottom',          size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+      // ✅ GLOBAL POSITIONS
+      { value: 'home_hero',       label: '🏠 Home Hero',       size: 'full',  style: 'slide',   px: '1920×600', ratio: '16:5' },
+      { value: 'category_hero',   label: '📄 Category Hero',   size: 'xl',    style: 'single',  px: '1600×500', ratio: '16:5' },
+      { value: 'category_mid_1',  label: '📄 Global Mid 1',    size: 'large', style: 'split',   px: '1200×400', ratio: '3:1' },
+      { value: 'category_mid_2',  label: '📄 Global Mid 2',    size: 'large', style: 'grid',    px: '1200×400', ratio: '3:1' },
+      { value: 'category_mid_3',  label: '📄 Global Mid 3',    size: 'large', style: 'slide',   px: '1200×400', ratio: '3:1' },
+      { value: 'category_bottom', label: '📄 Global Bottom',   size: 'xl',    style: 'overlay', px: '1600×500', ratio: '16:5' },
+
+      // ✅ NAYE — 27 CATEGORY-SPECIFIC POSITIONS
+      ...CATEGORY_POSITIONS,
     ],
     link_types: [
       { value: 'category',    label: 'Category' },
@@ -282,7 +337,6 @@ banners.get('/all', authMiddleware, requireAdmin, async (c) => {
 async function createBanner(c) {
   const body = await c.req.parseBody().catch(() => ({}));
 
-  // Title optional — default to 'Untitled Banner'
   const title = (body.title && String(body.title).trim()) || 'Untitled Banner';
   const subtitle = body.subtitle || '';
   const buttonText = body.buttonText || 'Shop Now';
@@ -381,7 +435,7 @@ async function updateBanner(c) {
     active: body.active !== undefined ? (boolFromBody(body.active, true) ? 1 : 0) : existing.active,
     category: JSON.stringify(categories),
     position: JSON.stringify(positions),
-    subcategories: JSON.stringify(subcategories),   // ✅ NEW
+    subcategories: JSON.stringify(subcategories),
     size: body.size !== undefined ? body.size : (existing.size || 'large'),
     display_style: body.display_style !== undefined ? body.display_style : (existing.display_style || 'single'),
     link_type: body.link_type !== undefined ? body.link_type : (existing.link_type || 'custom'),
