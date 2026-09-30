@@ -1,6 +1,6 @@
 // src/routes/subcategories.js
 import { Hono } from 'hono';
-import { HTTPException } from 'hono/http-exception';
+import { authMiddleware } from './auth.js';
 
 const subcategories = new Hono();
 
@@ -17,7 +17,39 @@ function slugify(str) {
 }
 
 /* ------------------------------------------------------------------ */
-/* GET /api/subcategories/:categorySlug                                */
+/* ✅ PUBLIC: GET /api/subcategories                                    */
+/* Saari subcategories (optional category filter ke saath)             */
+/* ------------------------------------------------------------------ */
+subcategories.get('/', async (c) => {
+  try {
+    const url = new URL(c.req.url);
+    const categorySlug = url.searchParams.get('category');
+
+    let query = 'SELECT * FROM subcategories';
+    const bindings = [];
+
+    if (categorySlug) {
+      query += ' WHERE category_slug = ?';
+      bindings.push(categorySlug);
+    }
+
+    query += ' ORDER BY category_slug ASC, name ASC';
+
+    const { results } = await c.env.DB.prepare(query).bind(...bindings).all();
+
+    return c.json({
+      success: true,
+      data: results || [],
+      count: results?.length || 0,
+    });
+  } catch (error) {
+    console.error('Get subcategories error:', error);
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* ✅ PUBLIC: GET /api/subcategories/:categorySlug                     */
 /* Category ki saari subcategories                                      */
 /* ------------------------------------------------------------------ */
 subcategories.get('/:categorySlug', async (c) => {
@@ -36,51 +68,35 @@ subcategories.get('/:categorySlug', async (c) => {
     });
   } catch (error) {
     console.error('Get subcategories error:', error);
-    throw new HTTPException(500, { message: 'Failed to fetch subcategories' });
+    return c.json({ success: false, error: error.message }, 500);
   }
 });
 
 /* ------------------------------------------------------------------ */
-/* GET /api/subcategories                                              */
-/* Saari subcategories (admin ke liye)                                 */
-/* ------------------------------------------------------------------ */
-subcategories.get('/', async (c) => {
-  try {
-    const { results } = await c.env.DB.prepare(
-      `SELECT * FROM subcategories ORDER BY category_slug ASC, name ASC`
-    ).all();
-
-    return c.json({
-      success: true,
-      data: results || [],
-      count: results?.length || 0,
-    });
-  } catch (error) {
-    console.error('Get all subcategories error:', error);
-    throw new HTTPException(500, { message: 'Failed to fetch subcategories' });
-  }
-});
-
-/* ------------------------------------------------------------------ */
-/* POST /api/subcategories                                             */
+/* 🛡️ ADMIN: POST /api/subcategories                                   */
 /* Nayi subcategory add karo                                            */
 /* ------------------------------------------------------------------ */
-subcategories.post('/', async (c) => {
+subcategories.post('/', authMiddleware, async (c) => {
   try {
-    const body = await c.req.json();
+    const body = await c.req.json().catch(() => ({}));
     const { category_slug, name, icon } = body;
 
-    // Validation
     if (!category_slug || !name) {
-      throw new HTTPException(400, { message: 'category_slug and name are required' });
+      return c.json({
+        success: false,
+        error: 'category_slug and name are required',
+      }, 400);
     }
 
     const cleanName = String(name).trim();
     if (cleanName.length < 2) {
-      throw new HTTPException(400, { message: 'Name must be at least 2 characters' });
+      return c.json({
+        success: false,
+        error: 'Name must be at least 2 characters',
+      }, 400);
     }
 
-    // Check duplicate (case-insensitive)
+    // Duplicate check (case-insensitive)
     const existing = await c.env.DB.prepare(
       `SELECT id FROM subcategories 
        WHERE category_slug = ? AND LOWER(name) = LOWER(?)`
@@ -93,7 +109,6 @@ subcategories.post('/', async (c) => {
       }, 409);
     }
 
-    // ID generate
     const id = `sub_${slugify(category_slug)}_${slugify(cleanName)}`;
     const iconValue = icon || '🌸';
 
@@ -113,17 +128,16 @@ subcategories.post('/', async (c) => {
       },
     }, 201);
   } catch (error) {
-    if (error instanceof HTTPException) throw error;
     console.error('Create subcategory error:', error);
-    throw new HTTPException(500, { message: error.message || 'Failed to create subcategory' });
+    return c.json({ success: false, error: error.message }, 500);
   }
 });
 
 /* ------------------------------------------------------------------ */
-/* DELETE /api/subcategories/:id                                       */
+/* 🛡️ ADMIN: DELETE /api/subcategories/:id                             */
 /* Subcategory delete karo                                              */
 /* ------------------------------------------------------------------ */
-subcategories.delete('/:id', async (c) => {
+subcategories.delete('/:id', authMiddleware, async (c) => {
   try {
     const id = c.req.param('id');
 
@@ -132,7 +146,7 @@ subcategories.delete('/:id', async (c) => {
     ).bind(id).first();
 
     if (!existing) {
-      throw new HTTPException(404, { message: 'Subcategory not found' });
+      return c.json({ success: false, error: 'Subcategory not found' }, 404);
     }
 
     await c.env.DB.prepare(
@@ -144,9 +158,8 @@ subcategories.delete('/:id', async (c) => {
       message: 'Subcategory deleted',
     });
   } catch (error) {
-    if (error instanceof HTTPException) throw error;
     console.error('Delete subcategory error:', error);
-    throw new HTTPException(500, { message: 'Failed to delete subcategory' });
+    return c.json({ success: false, error: error.message }, 500);
   }
 });
 
