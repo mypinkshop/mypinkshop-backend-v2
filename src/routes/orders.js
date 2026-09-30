@@ -132,8 +132,9 @@ orders.post('/', authMiddleware, async (c) => {
       return fail(c, 'address is required.', 400);
     }
 
-    const id = genId('order');
+    // ✅ FIX: id = order_number (MPS-09-xxx format)
     const orderNumber = genOrderNumber();
+    const id = orderNumber;
 
     let subtotal = 0;
     for (const item of body.items) {
@@ -310,8 +311,9 @@ orders.post('/create', authMiddleware, async (c) => {
     const normalizedShippingType = shippingType === 'express' ? 'express' : 'standard';
     const totals = await calculateTotals(c.env.DB, subtotal, discount, paymentMethod, normalizedShippingType);
 
-    const orderId = genId('order');
+    // ✅ FIX: id = order_number (MPS-09-xxx format)
     const orderNumber = genOrderNumber();
+    const orderId = orderNumber;
 
     await c.env.DB.prepare(
       `INSERT INTO orders
@@ -470,7 +472,11 @@ const cancelOrderHandler = async (c) => {
     const user = c.get('user');
     const id = c.req.param('id');
 
-    const order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    // ✅ FIX: id ya order_number dono se dhoondo
+    let order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    if (!order) {
+      order = await c.env.DB.prepare('SELECT * FROM orders WHERE order_number = ?').bind(id).first();
+    }
     if (!order) return fail(c, 'Order not found.', 404);
 
     if (order.user_id !== user.id && user.role !== 'admin') {
@@ -482,7 +488,7 @@ const cancelOrderHandler = async (c) => {
 
     const { results: items } = await c.env.DB.prepare(
       'SELECT * FROM order_items WHERE order_id = ?'
-    ).bind(id).all();
+    ).bind(order.id).all();
 
     for (const item of items || []) {
       if (item.variant_id) {
@@ -495,9 +501,9 @@ const cancelOrderHandler = async (c) => {
 
     await c.env.DB.prepare(
       `UPDATE orders SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?`
-    ).bind(id).run();
+    ).bind(order.id).run();
 
-    const updated = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    const updated = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(order.id).first();
     return ok(c, updated);
   } catch (err) {
     return fail(c, `Failed to cancel order: ${err.message}`, 500);
@@ -560,7 +566,11 @@ orders.get('/:id', authMiddleware, async (c) => {
     const user = c.get('user');
     const id = c.req.param('id');
 
-    const order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    // ✅ FIX: id ya order_number dono se dhoondo
+    let order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    if (!order) {
+      order = await c.env.DB.prepare('SELECT * FROM orders WHERE order_number = ?').bind(id).first();
+    }
     if (!order) return fail(c, 'Order not found.', 404);
 
     if (order.user_id !== user.id && user.role !== 'admin') {
@@ -569,7 +579,7 @@ orders.get('/:id', authMiddleware, async (c) => {
 
     const { results: items } = await c.env.DB.prepare(
       `SELECT oi.*, p.brand as product_brand FROM order_items oi LEFT JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?`
-    ).bind(id).all();
+    ).bind(order.id).all();
 
     const formattedItems = (items || []).map((i) => ({
       ...i,
@@ -593,7 +603,11 @@ orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
     const id = c.req.param('id');
     const body = await c.req.json().catch(() => ({}));
 
-    const existing = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    // ✅ FIX: id ya order_number dono se dhoondo
+    let existing = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    if (!existing) {
+      existing = await c.env.DB.prepare('SELECT * FROM orders WHERE order_number = ?').bind(id).first();
+    }
     if (!existing) return fail(c, 'Order not found.', 404);
 
     const total = body.total !== undefined ? Number(body.total) : existing.total_amount;
@@ -603,9 +617,9 @@ orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
 
     await c.env.DB.prepare(
       `UPDATE orders SET total_amount = ?, payment_method = ?, status = ?, shipping_address = ?, updated_at = datetime('now') WHERE id = ?`
-    ).bind(total, paymentMethod, status, shippingAddress, id).run();
+    ).bind(total, paymentMethod, status, shippingAddress, existing.id).run();
 
-    const updated = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    const updated = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(existing.id).first();
     return ok(c, updated);
   } catch (err) {
     return fail(c, `Failed to update order: ${err.message}`, 500);
@@ -623,13 +637,18 @@ const updateStatusHandler = async (c) => {
       return fail(c, `status must be one of: ${VALID_STATUSES.join(', ')}`, 400);
     }
 
-    const result = await c.env.DB.prepare(
+    // ✅ FIX: id ya order_number dono se dhoondo
+    let existing = await c.env.DB.prepare('SELECT id FROM orders WHERE id = ?').bind(id).first();
+    if (!existing) {
+      existing = await c.env.DB.prepare('SELECT id FROM orders WHERE order_number = ?').bind(id).first();
+    }
+    if (!existing) return fail(c, 'Order not found.', 404);
+
+    await c.env.DB.prepare(
       `UPDATE orders SET status = ?, updated_at = datetime('now') WHERE id = ?`
-    ).bind(status, id).run();
+    ).bind(status, existing.id).run();
 
-    if (result.meta?.changes === 0) return fail(c, 'Order not found.', 404);
-
-    const updated = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+    const updated = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(existing.id).first();
     return ok(c, updated);
   } catch (err) {
     return fail(c, `Failed to update order: ${err.message}`, 500);
