@@ -20,13 +20,12 @@ const generateSlug = (name) => {
 
 // ============================================================
 // ✅ PUBLIC: GET /api/categories
-// Saari active categories (main + sub)
 // ============================================================
 categories.get('/', async (c) => {
   try {
     const url = new URL(c.req.url);
-    const type = url.searchParams.get('type');        // 'main' | 'sub' | null
-    const parentId = url.searchParams.get('parent_id'); // parent filter
+    const type = url.searchParams.get('type');
+    const parentId = url.searchParams.get('parent_id');
     const includeInactive = url.searchParams.get('all') === 'true';
 
     let whereClause = includeInactive ? 'WHERE 1=1' : "WHERE status = 'active'";
@@ -57,7 +56,7 @@ categories.get('/', async (c) => {
 
 // ============================================================
 // ✅ PUBLIC: GET /api/categories/tree
-// Nested structure — main categories with their subs
+// ✅ Subcategories table se bhi merge karo
 // ============================================================
 categories.get('/tree', async (c) => {
   try {
@@ -67,13 +66,58 @@ categories.get('/tree', async (c) => {
        ORDER BY "order" ASC, name ASC`
     ).all();
 
+    // ✅ Subcategories table se bhi fetch karo
+    let subcategoriesList = [];
+    try {
+      const { results } = await c.env.DB.prepare(
+        `SELECT * FROM subcategories ORDER BY name ASC`
+      ).all();
+      subcategoriesList = results || [];
+    } catch (e) {
+      console.warn('Subcategories table not found, skipping:', e.message);
+    }
+
     const mains = (all || []).filter(cat => cat.type === 'main' || !cat.parent_id);
     const subs = (all || []).filter(cat => cat.type === 'sub' && cat.parent_id);
 
-    const tree = mains.map(main => ({
-      ...main,
-      children: subs.filter(sub => sub.parent_id === main.id)
-    }));
+    const tree = mains.map(main => {
+      // Category table ke children
+      const categoryChildren = subs
+        .filter(sub => sub.parent_id === main.id)
+        .map(s => ({
+          id: s.id,
+          name: s.name,
+          slug: s.slug,
+          icon: s.icon || '📁',
+          source: 'category',
+        }));
+
+      // Subcategories table ke children (slug match)
+      const subcategoryChildren = subcategoriesList
+        .filter(s => s.category_slug === main.slug)
+        .map(s => ({
+          id: s.id,
+          name: s.name,
+          slug: s.id,
+          icon: s.icon || '🌸',
+          source: 'subcategory',
+        }));
+
+      // Dono merge + dedupe (case-insensitive)
+      const seen = new Set();
+      const mergedChildren = [];
+      [...categoryChildren, ...subcategoryChildren].forEach(child => {
+        const key = child.name.toLowerCase().trim();
+        if (seen.has(key)) return;
+        seen.add(key);
+        mergedChildren.push(child);
+      });
+
+      return {
+        ...main,
+        children: mergedChildren,
+      };
+    });
 
     return ok(c, tree);
   } catch (error) {
@@ -98,7 +142,6 @@ categories.get('/:id', async (c) => {
 
 // ============================================================
 // 🛡️ ADMIN: POST /api/categories
-// Naya category ya sub-category banao
 // ============================================================
 categories.post('/', authMiddleware, requireAdmin, async (c) => {
   try {
@@ -109,13 +152,11 @@ categories.post('/', authMiddleware, requireAdmin, async (c) => {
       return fail(c, 'Category name is required', 400);
     }
 
-    // ✅ Duplicate check
     const existing = await c.env.DB.prepare(
       'SELECT id FROM categories WHERE LOWER(name) = LOWER(?)'
     ).bind(name.trim()).first();
 
     if (existing) {
-      // Agar already hai to existing return karo (auto-create case)
       return c.json({
         success: true,
         message: 'Category already exists',
@@ -128,7 +169,6 @@ categories.post('/', authMiddleware, requireAdmin, async (c) => {
     const catSlug = slug || generateSlug(name);
     const catType = type || 'main';
 
-    // ✅ Agar sub category hai to parent validate karo
     if (catType === 'sub' && parent_id) {
       const parent = await c.env.DB.prepare('SELECT id FROM categories WHERE id = ?').bind(parent_id).first();
       if (!parent) return fail(c, 'Parent category not found', 404);
@@ -214,7 +254,6 @@ categories.delete('/:id', authMiddleware, requireAdmin, async (c) => {
     const existing = await c.env.DB.prepare('SELECT * FROM categories WHERE id = ?').bind(id).first();
     if (!existing) return fail(c, 'Category not found', 404);
 
-    // ✅ Check: kitne products is category mein hain
     const productCount = await c.env.DB.prepare(
       'SELECT COUNT(*) as count FROM products WHERE main_category = ? OR sub_category = ?'
     ).bind(existing.name, existing.name).first();
@@ -223,7 +262,6 @@ categories.delete('/:id', authMiddleware, requireAdmin, async (c) => {
       return fail(c, `Cannot delete. ${productCount.count} products use this category.`, 400);
     }
 
-    // ✅ Check: sub categories hain?
     const subCount = await c.env.DB.prepare(
       'SELECT COUNT(*) as count FROM categories WHERE parent_id = ?'
     ).bind(id).first();
@@ -242,8 +280,6 @@ categories.delete('/:id', authMiddleware, requireAdmin, async (c) => {
 
 // ============================================================
 // ✅ PUBLIC: POST /api/categories/ensure
-// Frontend se call karega — auto-create category/sub
-// (Ye endpoint admin auth ke bina bhi kaam karega — kyunki product add ke saath call hoga)
 // ============================================================
 categories.post('/ensure', authMiddleware, async (c) => {
   try {
@@ -252,7 +288,6 @@ categories.post('/ensure', authMiddleware, async (c) => {
 
     const result = { main: null, sub: null };
 
-    // ✅ Main category ensure karo
     if (mainCategory && mainCategory.trim()) {
       const name = mainCategory.trim();
       let existing = await c.env.DB.prepare(
@@ -271,7 +306,6 @@ categories.post('/ensure', authMiddleware, async (c) => {
       result.main = existing;
     }
 
-    // ✅ Sub category ensure karo
     if (subCategory && subCategory.trim() && result.main) {
       const name = subCategory.trim();
       let existing = await c.env.DB.prepare(
