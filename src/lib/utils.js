@@ -43,10 +43,10 @@ export function genOrderNumber() {
 export function parsePagination(c) {
   const url = new URL(c.req.url);
   let page = parseInt(url.searchParams.get('page') || '1', 10);
-  let limit = parseInt(url.searchParams.get('limit') || '20', 10);
+  let limit = parseInt(url.searchParams.get('limit') || '5000', 10);  // ✅ Default 5000
   if (!Number.isFinite(page) || page < 1) page = 1;
-  if (!Number.isFinite(limit) || limit < 1) limit = 20;
-  if (limit > 100) limit = 100;
+  if (!Number.isFinite(limit) || limit < 1) limit = 5000;              // ✅ Fallback 5000
+  if (limit > 10000) limit = 10000;                                    // ✅ Max 10000 (D1 safe)
   const offset = (page - 1) * limit;
   return { page, limit, offset };
 }
