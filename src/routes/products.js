@@ -2,6 +2,7 @@
 import { Hono } from 'hono';
 import { authMiddleware, requireAdmin } from './auth.js';
 import { ok, fail, genId, parsePagination, safeJsonArray } from '../lib/utils.js';
+import { ensureBrandExists } from './brands.js';  // ✅ NEW IMPORT
 
 const products = new Hono();
 
@@ -63,7 +64,6 @@ const makeSlug = (s) => String(s || '')
 
 /**
  * ✅ AUTO-CALCULATE DISCOUNT
- * Har price/original_price change pe discount recalculate hoga
  */
 function calculateDiscount(price, originalPrice) {
   const p = parseFloat(price) || 0;
@@ -124,7 +124,6 @@ function serializeProduct(row) {
   if (!row) return null;
   const images = safeJsonArray(row.images);
 
-  // ✅ Auto-calculate discount (agar DB me purana/galat ho)
   const calculatedDiscount = calculateDiscount(row.price, row.original_price);
   const discountPercent = calculatedDiscount > 0
     ? calculatedDiscount
@@ -159,7 +158,6 @@ function serializeProduct(row) {
     skinType: row.skin_type,
     hairType: row.hair_type,
     hairConcerns: row.hair_concerns,
-    // ✅ Discount — calculated value use karo
     discountPercent: discountPercent,
     discount_percent: discountPercent,
     seoMeta: {
@@ -288,9 +286,6 @@ async function replaceVariants(db, productId, variants, option1Name = 'Size', op
 
 // ============================================================
 // GET /api/products
-// ✅ Search me SKU
-// ✅ Brand filter
-// ✅ Sort by discount_high
 // ============================================================
 products.get('/', async (c) => {
   try {
@@ -320,7 +315,6 @@ products.get('/', async (c) => {
       conditions.push('LOWER(brand) = LOWER(?)');
       bindings.push(brand);
     }
-    // ✅ Search — title + brand + description + SKU
     if (search) {
       conditions.push('(name LIKE ? OR brand LIKE ? OR description LIKE ? OR sku LIKE ?)');
       const like = `%${search}%`;
@@ -340,7 +334,6 @@ products.get('/', async (c) => {
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    // ✅ Sort options
     let orderClause = 'ORDER BY created_at DESC';
     if (sort === 'price_asc' || sort === 'price_low') orderClause = 'ORDER BY price ASC';
     else if (sort === 'price_desc' || sort === 'price_high') orderClause = 'ORDER BY price DESC';
@@ -421,7 +414,7 @@ products.get('/:id/variants', async (c) => {
 
 // ============================================================
 // POST /api/products/create
-// ✅ AUTO-CALCULATE DISCOUNT (frontend value ignore)
+// ✅ AUTO-CREATE BRAND ADDED
 // ============================================================
 products.post('/create', authMiddleware, requireAdmin, async (c) => {
   try {
@@ -493,9 +486,17 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       }
     }
 
+    // ✅ AUTO-CREATE BRAND (agar brand diya hai)
+    if (brand && brand.trim()) {
+      try {
+        await ensureBrandExists(c, brand);
+      } catch (err) {
+        console.warn('ensureBrandExists failed (non-fatal):', err.message);
+      }
+    }
+
     const hasVars = hasVariations || (Array.isArray(variants) && variants.length > 0);
 
-    // ✅ AUTO-CALCULATE DISCOUNT
     const finalPrice = parseFloat(price) || 0;
     const finalOriginalPrice = parseFloat(originalPrice) || 0;
     const calculatedDiscount = calculateDiscount(finalPrice, finalOriginalPrice);
@@ -509,7 +510,7 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       toSafeJsonString(description), toSafeJsonString(keyFeatures),
       toSafeJsonObjectString(productDetails), toSafeString(shortDescription),
       finalPrice, finalOriginalPrice,
-      calculatedDiscount,  // ✅ AUTO-CALCULATED
+      calculatedDiscount,
       parseFloat(tax) || 18,
       parseInt(stock, 10) || 10, toSafeString(sku),
       toSafeString(weight), toSafeString(dimensions),
@@ -550,7 +551,6 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       .bind(...bindValues)
       .run();
 
-    // Save variants
     if (hasVars && Array.isArray(variants) && variants.length > 0) {
       await saveVariants(c.env.DB, id, variants, option1Name, option2Name);
     }
@@ -565,7 +565,7 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
 
 // ============================================================
 // PUT /api/products/:id
-// ✅ AUTO-RECALCULATE DISCOUNT
+// ✅ AUTO-CREATE BRAND ADDED
 // ============================================================
 products.put('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
@@ -575,7 +575,6 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
 
     const body = await c.req.json().catch(() => ({}));
 
-    // ✅ AUTO-RECALCULATE DISCOUNT
     const newPrice = body.price !== undefined ? parseFloat(body.price) || 0 : existing.price;
     const newOriginalPrice = body.originalPrice !== undefined
       ? parseFloat(body.originalPrice) || 0
@@ -598,7 +597,7 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
       short_description: body.shortDescription !== undefined ? toSafeString(body.shortDescription) : existing.short_description,
       price: newPrice,
       original_price: newOriginalPrice,
-      discount_percent: calculatedDiscount,  // ✅ AUTO-RECALCULATED
+      discount_percent: calculatedDiscount,
       tax: body.tax !== undefined ? parseFloat(body.tax) || 18 : existing.tax,
       stock: body.stock !== undefined ? parseInt(body.stock, 10) || 0 : existing.stock,
       sku: body.sku !== undefined ? toSafeString(body.sku) : existing.sku,
@@ -636,6 +635,15 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
       mainCatId = await ensureCategory(c.env.DB, merged.main_category, 'main');
       if (mainCatId && merged.sub_category && merged.sub_category.trim()) {
         await ensureCategory(c.env.DB, merged.sub_category, 'sub', mainCatId);
+      }
+    }
+
+    // ✅ AUTO-CREATE BRAND (agar brand change hua ho ya naya ho)
+    if (merged.brand && merged.brand.trim()) {
+      try {
+        await ensureBrandExists(c, merged.brand);
+      } catch (err) {
+        console.warn('ensureBrandExists failed (non-fatal):', err.message);
       }
     }
 
