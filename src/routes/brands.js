@@ -20,20 +20,16 @@ function slugify(str) {
 
 /**
  * ✅ SAFE BODY PARSER
- * JSON aur FormData dono handle karta hai
- * Ye `name is required` error fix karega
  */
 async function parseBodySafe(c) {
   try {
     const contentType = c.req.header('content-type') || '';
 
-    // JSON body
     if (contentType.includes('application/json')) {
       const json = await c.req.json().catch(() => ({}));
       return json || {};
     }
 
-    // FormData / multipart
     if (
       contentType.includes('multipart/form-data') ||
       contentType.includes('application/x-www-form-urlencoded')
@@ -42,7 +38,6 @@ async function parseBodySafe(c) {
       return form || {};
     }
 
-    // Fallback: try JSON first, then FormData
     try {
       return await c.req.json();
     } catch {
@@ -54,9 +49,6 @@ async function parseBodySafe(c) {
   }
 }
 
-/**
- * JSON string parse karo safely
- */
 function parseJSON(str, fallback = []) {
   if (!str) return fallback;
   if (Array.isArray(str) || typeof str === 'object') return str;
@@ -68,18 +60,12 @@ function parseJSON(str, fallback = []) {
   }
 }
 
-/**
- * ✅ SAFE BOOL — string ya boolean dono handle karo
- */
 function safeBool(val, defaultVal = false) {
   if (val === undefined || val === null || val === '') return defaultVal;
   if (typeof val === 'boolean') return val;
   return val === 'true' || val === '1' || val === 1;
 }
 
-/**
- * ✅ SAFE INT
- */
 function safeInt(val, defaultVal = 0) {
   const n = parseInt(val);
   return Number.isFinite(n) ? n : defaultVal;
@@ -133,10 +119,77 @@ async function hasNewColumns(c) {
 }
 
 /* --------------------------------------------------------------------- */
+/* ✅ AUTO-CREATE BRAND — products.js se call hoga                       */
+/* --------------------------------------------------------------------- */
+/**
+ * Product save hone pe brand auto-create karo.
+ * Agar already exist karti hai toh skip — duplicate nahi banega.
+ * @param {Context} c - Hono context
+ * @param {string} brandName - Product ka brand name
+ * @returns {object|null} - Created/existing brand ya null
+ */
+export async function ensureBrandExists(c, brandName) {
+  if (!brandName || !String(brandName).trim()) return null;
+
+  const cleanName = String(brandName).trim();
+  const slug = slugify(cleanName);
+
+  try {
+    const hasTable = await brandsTableExists(c);
+    if (!hasTable) {
+      console.log('[ensureBrand] brands table nahi hai, skip');
+      return null;
+    }
+
+    // Already exist karti hai? (name ya slug se match)
+    const existing = await c.env.DB.prepare(
+      `SELECT * FROM brands 
+       WHERE LOWER(name) = LOWER(?) OR slug = ?
+       LIMIT 1`
+    ).bind(cleanName, slug).first();
+
+    if (existing) {
+      console.log(`[ensureBrand] Already exists: ${existing.name} (${existing.slug})`);
+      return formatBrand(existing);
+    }
+
+    // Naya brand insert karo
+    const id = genId('brand');
+    const cols = await hasNewColumns(c);
+
+    let insertSql, bindings;
+
+    if (cols.highlights && cols.offers && cols.featured_products) {
+      insertSql = `INSERT INTO brands 
+        (id, name, slug, logo, banner, description, tagline,
+         highlights, offers, featured_products,
+         active, is_featured, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, '', '', '', '', '[]', '[]', '[]', 1, 0, 0, datetime('now'), datetime('now'))`;
+      bindings = [id, cleanName, slug];
+    } else {
+      insertSql = `INSERT INTO brands 
+        (id, name, slug, logo, banner, description, tagline,
+         active, is_featured, sort_order, created_at, updated_at)
+       VALUES (?, ?, ?, '', '', '', '', 1, 0, 0, datetime('now'), datetime('now'))`;
+      bindings = [id, cleanName, slug];
+    }
+
+    await c.env.DB.prepare(insertSql).bind(...bindings).run();
+
+    const created = await c.env.DB.prepare('SELECT * FROM brands WHERE id = ?').bind(id).first();
+    console.log(`[ensureBrand] ✅ Created new brand: ${cleanName} (${slug})`);
+    return formatBrand(created);
+  } catch (err) {
+    console.error('[ensureBrand] error:', err);
+    return null;
+  }
+}
+
+/* --------------------------------------------------------------------- */
 /* PUBLIC                                                                */
 /* --------------------------------------------------------------------- */
 
-// GET /api/brands?search=&limit=&featured=
+// GET /api/brands
 brands.get('/', async (c) => {
   try {
     const url = new URL(c.req.url);
@@ -466,13 +519,12 @@ brands.post('/ensure', authMiddleware, async (c) => {
 /* ADMIN — Brand CRUD                                                    */
 /* --------------------------------------------------------------------- */
 
-// POST /api/brands — naya brand banao
+// POST /api/brands
 brands.post('/', authMiddleware, requireAdmin, async (c) => {
   try {
     const hasBrandsTable = await brandsTableExists(c);
     if (!hasBrandsTable) return fail(c, 'Brands table not set up yet', 500);
 
-    // ✅ JSON + FormData dono handle
     const body = await parseBodySafe(c);
 
     console.log('[Brand Create] Received body keys:', Object.keys(body));
@@ -490,7 +542,6 @@ brands.post('/', authMiddleware, requireAdmin, async (c) => {
     const sort_order = safeInt(body.sort_order, 0);
     const active = body.active !== undefined ? (safeBool(body.active, true) ? 1 : 0) : 1;
 
-    // NAYE FIELDS
     const highlights = body.highlights
       ? (typeof body.highlights === 'string' ? body.highlights : JSON.stringify(body.highlights))
       : '[]';
@@ -503,19 +554,16 @@ brands.post('/', authMiddleware, requireAdmin, async (c) => {
           : JSON.stringify(body.featured_products))
       : '[]';
 
-    // Logo
     let logo = typeof body.logo === 'string' ? body.logo : '';
     if (body.logo && typeof body.logo === 'object' && typeof body.logo.arrayBuffer === 'function') {
       logo = await fileToDataUrl(body.logo);
     }
 
-    // Banner
     let banner = typeof body.banner === 'string' ? body.banner : '';
     if (body.banner && typeof body.banner === 'object' && typeof body.banner.arrayBuffer === 'function') {
       banner = await fileToDataUrl(body.banner);
     }
 
-    // Duplicate check
     const dup = await c.env.DB.prepare(
       `SELECT id FROM brands WHERE slug = ? OR LOWER(name) = LOWER(?)`
     ).bind(slug, name).first();
@@ -648,7 +696,7 @@ brands.put('/:id', authMiddleware, requireAdmin, async (c) => {
   }
 });
 
-// PATCH /api/brands/:id — quick toggle
+// PATCH /api/brands/:id
 brands.patch('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
     const hasBrandsTable = await brandsTableExists(c);
