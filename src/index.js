@@ -35,6 +35,7 @@ import brands from './routes/brands.js';
 import sitemap from './routes/sitemap.js';
 import settingsRoutes from './routes/settings.js';
 import feedRoutes from './routes/feed.js';
+import appBannersRoutes from './routes/appBanners.js';
 
 
 
@@ -148,6 +149,7 @@ app.route('/api/admin', adminPaymentsRouter);
 app.route('/api/settings', settingsRoutes);
 app.route('/api/brands', brands);
 app.route('/api/feed', feedRoutes);
+app.route('/api/app-banners', appBannersRoutes);
 app.route('/', sitemap);
 
 /* --------------------------------------------------------------------- */
