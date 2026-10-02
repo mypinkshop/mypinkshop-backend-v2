@@ -1,5 +1,5 @@
 -- schema.sql
--- Cloudflare D1 (SQLite) schema for myjinkshop.
+-- Cloudflare D1 (SQLite) schema for mypinkshop.
 -- Apply with:
 --   wrangler d1 execute mypinkshop-db --local --file=schema.sql
 --   wrangler d1 execute mypinkshop-db --remote --file=schema.sql
@@ -26,7 +26,7 @@ CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_role  ON users(role);
 
 /* ----------------------------------------------------------------------- */
-/* categories  ✅ NEW                                                         */
+/* categories                                                                */
 /* ----------------------------------------------------------------------- */
 CREATE TABLE IF NOT EXISTS categories (
   id            TEXT PRIMARY KEY,
@@ -121,7 +121,7 @@ CREATE INDEX IF NOT EXISTS idx_offers_active ON offers(is_active);
 CREATE INDEX IF NOT EXISTS idx_offers_dates  ON offers(start_date, end_date);
 
 /* ----------------------------------------------------------------------- */
-/* banners                                                                   */
+/* banners (WEBSITE banners)                                                 */
 /* ----------------------------------------------------------------------- */
 CREATE TABLE IF NOT EXISTS banners (
   id            TEXT PRIMARY KEY,
@@ -138,6 +138,36 @@ CREATE TABLE IF NOT EXISTS banners (
 
 CREATE INDEX IF NOT EXISTS idx_banners_active ON banners(active);
 CREATE INDEX IF NOT EXISTS idx_banners_order  ON banners(sort_order);
+
+/* ----------------------------------------------------------------------- */
+/* ✅ APP BANNERS (MOBILE APP ONLY — NEW)                                    */
+/* ----------------------------------------------------------------------- */
+CREATE TABLE IF NOT EXISTS app_banners (
+  id              TEXT PRIMARY KEY,
+  type            TEXT NOT NULL DEFAULT 'hero'
+                     CHECK (type IN ('hero', 'category', 'offer', 'promo', 'section')),
+  title           TEXT,
+  subtitle        TEXT,
+  description     TEXT,
+  emoji           TEXT,
+  image           TEXT,
+  cta_text        TEXT,
+  cta_link        TEXT,
+  gradient_start  TEXT DEFAULT '#EC4899',
+  gradient_end    TEXT DEFAULT '#F43F5E',
+  bg_color        TEXT,
+  text_color      TEXT DEFAULT '#FFFFFF',
+  order_index     INTEGER DEFAULT 0,
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  start_date      TEXT,
+  end_date        TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_banners_active ON app_banners(is_active, order_index);
+CREATE INDEX IF NOT EXISTS idx_app_banners_type   ON app_banners(type);
+CREATE INDEX IF NOT EXISTS idx_app_banners_dates  ON app_banners(start_date, end_date);
 
 /* ----------------------------------------------------------------------- */
 /* ads                                                                       */
@@ -162,14 +192,14 @@ CREATE INDEX IF NOT EXISTS idx_ads_active   ON ads(is_active);
 CREATE INDEX IF NOT EXISTS idx_ads_position ON ads(position);
 
 /* ----------------------------------------------------------------------- */
-/* orders + order_items                                                     */
+/* orders + order_items                                                      */
 /* ----------------------------------------------------------------------- */
 CREATE TABLE IF NOT EXISTS orders (
   id                TEXT PRIMARY KEY,
   user_id           TEXT NOT NULL REFERENCES users(id),
   order_number      TEXT NOT NULL UNIQUE,
   status            TEXT NOT NULL DEFAULT 'pending'
-                       CHECK (status IN ('pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded')),
+                       CHECK (status IN ('pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded', 'processing', 'in_transit', 'out_for_delivery')),
   subtotal          REAL NOT NULL DEFAULT 0,
   tax_amount        REAL NOT NULL DEFAULT 0,
   shipping_amount   REAL NOT NULL DEFAULT 0,
@@ -179,6 +209,7 @@ CREATE TABLE IF NOT EXISTS orders (
                        CHECK (payment_status IN ('pending', 'paid', 'failed', 'refunded')),
   payment_method    TEXT DEFAULT 'cod',
   payment_id        TEXT,
+  shipping_type     TEXT DEFAULT 'standard',
   shipping_address  TEXT NOT NULL DEFAULT '{}',
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
@@ -188,13 +219,21 @@ CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
 CREATE INDEX IF NOT EXISTS idx_orders_status  ON orders(status);
 
 CREATE TABLE IF NOT EXISTS order_items (
-  id            TEXT PRIMARY KEY,
-  order_id      TEXT NOT NULL REFERENCES orders(id),
-  product_id    TEXT NOT NULL REFERENCES products(id),
-  product_name  TEXT NOT NULL,
-  price         REAL NOT NULL,
-  quantity      INTEGER NOT NULL,
-  subtotal      REAL NOT NULL
+  id             TEXT PRIMARY KEY,
+  order_id       TEXT NOT NULL REFERENCES orders(id),
+  product_id     TEXT NOT NULL REFERENCES products(id),
+  product_name   TEXT NOT NULL,
+  price          REAL NOT NULL,
+  quantity       INTEGER NOT NULL,
+  subtotal       REAL NOT NULL,
+  brand          TEXT DEFAULT '',
+  variant_id     TEXT,
+  variant_sku    TEXT,
+  size           TEXT,
+  color          TEXT,
+  option1_name   TEXT,
+  option2_name   TEXT,
+  variant_label  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
@@ -285,6 +324,7 @@ CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications(is_read);
 CREATE TABLE IF NOT EXISTS otp_verifications (
   id            TEXT PRIMARY KEY,
   email         TEXT NOT NULL,
+  phone         TEXT,
   otp_code      TEXT NOT NULL,
   is_verified   INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
@@ -292,6 +332,7 @@ CREATE TABLE IF NOT EXISTS otp_verifications (
 );
 
 CREATE INDEX IF NOT EXISTS idx_otp_email ON otp_verifications(email);
+CREATE INDEX IF NOT EXISTS idx_otp_phone ON otp_verifications(phone);
 
 /* ----------------------------------------------------------------------- */
 /* password_resets                                                           */
@@ -346,7 +387,7 @@ CREATE TABLE IF NOT EXISTS user_cards (
 CREATE INDEX IF NOT EXISTS idx_user_cards_user_id ON user_cards(user_id);
 
 /* ----------------------------------------------------------------------- */
-/* user_upi                                                                   */
+/* user_upi                                                                  */
 /* ----------------------------------------------------------------------- */
 CREATE TABLE IF NOT EXISTS user_upi (
   id            TEXT PRIMARY KEY,
@@ -360,7 +401,7 @@ CREATE TABLE IF NOT EXISTS user_upi (
 CREATE INDEX IF NOT EXISTS idx_user_upi_user_id ON user_upi(user_id);
 
 /* ----------------------------------------------------------------------- */
-/* reviews                                                                    */
+/* reviews                                                                   */
 /* ----------------------------------------------------------------------- */
 CREATE TABLE IF NOT EXISTS reviews (
   id            TEXT PRIMARY KEY,
@@ -368,16 +409,24 @@ CREATE TABLE IF NOT EXISTS reviews (
   product_id    TEXT NOT NULL REFERENCES products(id),
   rating        INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
   review        TEXT DEFAULT '',
+  title         TEXT DEFAULT '',
+  images        TEXT DEFAULT '[]',
+  status        TEXT NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'approved', 'rejected')),
+  order_id      TEXT,
+  helpful_count INTEGER DEFAULT 0,
+  author_name   TEXT,
+  admin_reply   TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(user_id, product_id)
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_reviews_product_id ON reviews(product_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_user_id    ON reviews(user_id);
+CREATE INDEX IF NOT EXISTS idx_reviews_status     ON reviews(status);
 
 /* ----------------------------------------------------------------------- */
-/* wishlist                                                                   */
+/* wishlist                                                                  */
 /* ----------------------------------------------------------------------- */
 CREATE TABLE IF NOT EXISTS wishlist (
   id            TEXT PRIMARY KEY,
@@ -390,7 +439,55 @@ CREATE TABLE IF NOT EXISTS wishlist (
 CREATE INDEX IF NOT EXISTS idx_wishlist_user_id ON wishlist(user_id);
 
 /* ----------------------------------------------------------------------- */
-/* Seed data                                                                  */
+/* returns                                                                   */
+/* ----------------------------------------------------------------------- */
+CREATE TABLE IF NOT EXISTS returns (
+  id            TEXT PRIMARY KEY,
+  order_id      TEXT NOT NULL REFERENCES orders(id),
+  user_id       TEXT NOT NULL REFERENCES users(id),
+  reason        TEXT NOT NULL,
+  amount        REAL DEFAULT 0,
+  status        TEXT NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'approved', 'rejected', 'completed')),
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_returns_order_id ON returns(order_id);
+CREATE INDEX IF NOT EXISTS idx_returns_user_id  ON returns(user_id);
+CREATE INDEX IF NOT EXISTS idx_returns_status   ON returns(status);
+
+/* ----------------------------------------------------------------------- */
+/* shiprocket_auth                                                           */
+/* ----------------------------------------------------------------------- */
+CREATE TABLE IF NOT EXISTS shiprocket_auth (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  token         TEXT NOT NULL,
+  expires_at    TEXT NOT NULL
+);
+
+/* ----------------------------------------------------------------------- */
+/* product_variants                                                          */
+/* ----------------------------------------------------------------------- */
+CREATE TABLE IF NOT EXISTS product_variants (
+  id            TEXT PRIMARY KEY,
+  product_id    TEXT NOT NULL REFERENCES products(id),
+  sku           TEXT UNIQUE,
+  price         REAL DEFAULT 0,
+  stock         INTEGER DEFAULT 0,
+  variant_label TEXT,
+  option1_name  TEXT,
+  option2_name  TEXT,
+  size          TEXT,
+  color         TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_variants_product_id ON product_variants(product_id);
+
+/* ----------------------------------------------------------------------- */
+/* Seed data                                                                 */
 /* ----------------------------------------------------------------------- */
 
 INSERT OR IGNORE INTO offers (id, title, description, is_active, type, discount_type, discount_value, min_order_value)
