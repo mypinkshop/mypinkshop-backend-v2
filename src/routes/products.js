@@ -2,7 +2,7 @@
 import { Hono } from 'hono';
 import { authMiddleware, requireAdmin } from './auth.js';
 import { ok, fail, genId, parsePagination, safeJsonArray } from '../lib/utils.js';
-import { ensureBrandExists } from './brands.js';  // ✅ NEW IMPORT
+import { ensureBrandExists } from './brands.js';
 
 const products = new Hono();
 
@@ -62,9 +62,6 @@ const makeSlug = (s) => String(s || '')
   .replace(/[^a-z0-9]+/g, '-')
   .replace(/^-|-$/g, '');
 
-/**
- * ✅ AUTO-CALCULATE DISCOUNT
- */
 function calculateDiscount(price, originalPrice) {
   const p = parseFloat(price) || 0;
   const op = parseFloat(originalPrice) || 0;
@@ -375,6 +372,37 @@ products.get('/', async (c) => {
 });
 
 // ============================================================
+// GET /api/products/search?q=...
+// ⚠️ IMPORTANT: /search must be BEFORE /:id
+// ============================================================
+products.get('/search', async (c) => {
+  try {
+    const url = new URL(c.req.url);
+    const q = url.searchParams.get('q') || '';
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '20', 10), 50);
+
+    if (!q.trim()) return ok(c, []);
+
+    const like = `%${q.trim()}%`;
+    const { results } = await c.env.DB.prepare(
+      `SELECT * FROM products 
+       WHERE is_active = 1 
+         AND (name LIKE ? OR brand LIKE ? OR main_category LIKE ? OR sub_category LIKE ? OR sku LIKE ?)
+       ORDER BY 
+         CASE WHEN name LIKE ? THEN 1 ELSE 2 END,
+         rating DESC, review_count DESC
+       LIMIT ?`
+    )
+      .bind(like, like, like, like, like, like, limit)
+      .all();
+
+    return ok(c, (results || []).map(serializeProduct));
+  } catch (err) {
+    return fail(c, `Search failed: ${err.message}`, 500);
+  }
+});
+
+// ============================================================
 // GET /api/products/:id
 // ============================================================
 products.get('/:id', async (c) => {
@@ -385,6 +413,55 @@ products.get('/:id', async (c) => {
     return ok(c, await serializeProductWithVariants(c.env.DB, product));
   } catch (err) {
     return fail(c, `Failed to load product: ${err.message}`, 500);
+  }
+});
+
+// ============================================================
+// GET /api/products/:id/related
+// Related products — 3 sections (related, sameBrand, alsoViewed)
+// ============================================================
+products.get('/:id/related', async (c) => {
+  try {
+    const id = c.req.param('id');
+
+    const product = await c.env.DB.prepare(
+      'SELECT id, main_category, sub_category, brand FROM products WHERE id = ?'
+    ).bind(id).first();
+
+    if (!product) return fail(c, 'Product not found.', 404);
+
+    // 1. Same category (related)
+    const { results: related } = await c.env.DB.prepare(
+      `SELECT * FROM products 
+       WHERE main_category = ? AND id != ? AND is_active = 1 AND stock > 0
+       ORDER BY RANDOM() LIMIT 8`
+    ).bind(product.main_category, id).all();
+
+    // 2. Same brand
+    let sameBrand = [];
+    if (product.brand && product.brand.trim()) {
+      const { results } = await c.env.DB.prepare(
+        `SELECT * FROM products 
+         WHERE LOWER(brand) = LOWER(?) AND id != ? AND is_active = 1 AND stock > 0
+         ORDER BY RANDOM() LIMIT 8`
+      ).bind(product.brand, id).all();
+      sameBrand = results || [];
+    }
+
+    // 3. Customers also viewed (random)
+    const { results: alsoViewed } = await c.env.DB.prepare(
+      `SELECT * FROM products 
+       WHERE id != ? AND is_active = 1 AND stock > 0
+       ORDER BY RANDOM() LIMIT 8`
+    ).bind(id).all();
+
+    return ok(c, {
+      related: (related || []).map(serializeProduct),
+      sameBrand: (sameBrand || []).map(serializeProduct),
+      alsoViewed: (alsoViewed || []).map(serializeProduct),
+    });
+  } catch (err) {
+    return fail(c, `Failed to load related products: ${err.message}`, 500);
   }
 });
 
@@ -414,7 +491,6 @@ products.get('/:id/variants', async (c) => {
 
 // ============================================================
 // POST /api/products/create
-// ✅ AUTO-CREATE BRAND ADDED
 // ============================================================
 products.post('/create', authMiddleware, requireAdmin, async (c) => {
   try {
@@ -477,7 +553,6 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       }
     }
 
-    // AUTO-CREATE CATEGORIES
     let mainCatId = null;
     if (mainCategory && mainCategory.trim()) {
       mainCatId = await ensureCategory(c.env.DB, mainCategory, 'main');
@@ -486,7 +561,6 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
       }
     }
 
-    // ✅ AUTO-CREATE BRAND (agar brand diya hai)
     if (brand && brand.trim()) {
       try {
         await ensureBrandExists(c, brand);
@@ -565,7 +639,6 @@ products.post('/create', authMiddleware, requireAdmin, async (c) => {
 
 // ============================================================
 // PUT /api/products/:id
-// ✅ AUTO-CREATE BRAND ADDED
 // ============================================================
 products.put('/:id', authMiddleware, requireAdmin, async (c) => {
   try {
@@ -638,7 +711,6 @@ products.put('/:id', authMiddleware, requireAdmin, async (c) => {
       }
     }
 
-    // ✅ AUTO-CREATE BRAND (agar brand change hua ho ya naya ho)
     if (merged.brand && merged.brand.trim()) {
       try {
         await ensureBrandExists(c, merged.brand);
