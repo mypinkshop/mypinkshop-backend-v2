@@ -6,8 +6,32 @@ import { getShippingConfig } from './settings.js';
 
 const orders = new Hono();
 
-const VALID_STATUSES = ['pending', 'processing', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded'];
+const VALID_STATUSES = ['pending', 'processing', 'confirmed', 'shipped', 'delivered', 'cancelled', 'refunded', 'failed', 'payment_failed'];
 const SHIPROCKET_BASE_URL = 'https://apiv2.shiprocket.in/v1/external';
+
+/* ============================================================
+   ✅ STATUS NORMALIZER — payment_status === 'failed' → status = 'failed'
+   ============================================================ */
+function normalizeOrderStatus(order) {
+  if (!order) return order;
+
+  let status = String(order.status || '').toLowerCase();
+  const paymentStatus = String(order.payment_status || '').toLowerCase();
+
+  // Agar payment failed hai aur order abhi cancelled/delivered nahi hua,
+  // toh status bhi 'failed' treat karo
+  if (
+    paymentStatus === 'failed' &&
+    status !== 'cancelled' &&
+    status !== 'cancelled_auto' &&
+    status !== 'delivered' &&
+    status !== 'refunded'
+  ) {
+    status = 'failed';
+  }
+
+  return { ...order, status };
+}
 
 /* Shiprocket Token */
 async function getShiprocketToken(env) {
@@ -132,7 +156,6 @@ orders.post('/', authMiddleware, async (c) => {
       return fail(c, 'address is required.', 400);
     }
 
-    // ✅ FIX: id = order_number (MPS-09-xxx format)
     const orderNumber = genOrderNumber();
     const id = orderNumber;
 
@@ -311,7 +334,6 @@ orders.post('/create', authMiddleware, async (c) => {
     const normalizedShippingType = shippingType === 'express' ? 'express' : 'standard';
     const totals = await calculateTotals(c.env.DB, subtotal, discount, paymentMethod, normalizedShippingType);
 
-    // ✅ FIX: id = order_number (MPS-09-xxx format)
     const orderNumber = genOrderNumber();
     const orderId = orderNumber;
 
@@ -396,7 +418,10 @@ orders.get('/my-orders', authMiddleware, async (c) => {
       .bind(user.id)
       .first();
 
-    return ok(c, results || [], {
+    // ✅ Normalize status
+    const normalized = (results || []).map(normalizeOrderStatus);
+
+    return ok(c, normalized, {
       page,
       limit,
       total: countRow?.total || 0,
@@ -450,8 +475,11 @@ orders.get('/user', authMiddleware, async (c) => {
         ? new Date(createdAt.replace(' ', 'T') + 'Z').toISOString()
         : null;
 
+      // ✅ FIX: normalize status before returning
+      const normalized = normalizeOrderStatus(order);
+
       return {
-        ...order,
+        ...normalized,
         created_at: formattedDate,
         items: (order.items || []).map((item) => {
           const images = safeJsonArray(item.product_images);
@@ -472,7 +500,6 @@ const cancelOrderHandler = async (c) => {
     const user = c.get('user');
     const id = c.req.param('id');
 
-    // ✅ FIX: id ya order_number dono se dhoondo
     let order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
     if (!order) {
       order = await c.env.DB.prepare('SELECT * FROM orders WHERE order_number = ?').bind(id).first();
@@ -504,7 +531,7 @@ const cancelOrderHandler = async (c) => {
     ).bind(order.id).run();
 
     const updated = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(order.id).first();
-    return ok(c, updated);
+    return ok(c, normalizeOrderStatus(updated));
   } catch (err) {
     return fail(c, `Failed to cancel order: ${err.message}`, 500);
   }
@@ -553,7 +580,10 @@ orders.get('/all', authMiddleware, requireAdmin, async (c) => {
       }
     }
 
-    return ok(c, ordersList || []);
+    // ✅ Normalize
+    const normalized = (ordersList || []).map(normalizeOrderStatus);
+
+    return ok(c, normalized);
   } catch (err) {
     console.error('❌ Load all orders error:', err);
     return fail(c, `Failed to load all orders: ${err.message}`, 500);
@@ -566,7 +596,6 @@ orders.get('/:id', authMiddleware, async (c) => {
     const user = c.get('user');
     const id = c.req.param('id');
 
-    // ✅ FIX: id ya order_number dono se dhoondo
     let order = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
     if (!order) {
       order = await c.env.DB.prepare('SELECT * FROM orders WHERE order_number = ?').bind(id).first();
@@ -591,7 +620,8 @@ orders.get('/:id', authMiddleware, async (c) => {
       brand: i.brand || i.product_brand || 'Richfem',
     }));
 
-    return ok(c, { ...order, items: formattedItems });
+    // ✅ Normalize status before return
+    return ok(c, { ...normalizeOrderStatus(order), items: formattedItems });
   } catch (err) {
     return fail(c, `Failed to load order: ${err.message}`, 500);
   }
@@ -603,7 +633,6 @@ orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
     const id = c.req.param('id');
     const body = await c.req.json().catch(() => ({}));
 
-    // ✅ FIX: id ya order_number dono se dhoondo
     let existing = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
     if (!existing) {
       existing = await c.env.DB.prepare('SELECT * FROM orders WHERE order_number = ?').bind(id).first();
@@ -620,7 +649,7 @@ orders.put('/:id', authMiddleware, requireAdmin, async (c) => {
     ).bind(total, paymentMethod, status, shippingAddress, existing.id).run();
 
     const updated = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(existing.id).first();
-    return ok(c, updated);
+    return ok(c, normalizeOrderStatus(updated));
   } catch (err) {
     return fail(c, `Failed to update order: ${err.message}`, 500);
   }
@@ -637,7 +666,6 @@ const updateStatusHandler = async (c) => {
       return fail(c, `status must be one of: ${VALID_STATUSES.join(', ')}`, 400);
     }
 
-    // ✅ FIX: id ya order_number dono se dhoondo
     let existing = await c.env.DB.prepare('SELECT id FROM orders WHERE id = ?').bind(id).first();
     if (!existing) {
       existing = await c.env.DB.prepare('SELECT id FROM orders WHERE order_number = ?').bind(id).first();
@@ -649,7 +677,7 @@ const updateStatusHandler = async (c) => {
     ).bind(status, existing.id).run();
 
     const updated = await c.env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(existing.id).first();
-    return ok(c, updated);
+    return ok(c, normalizeOrderStatus(updated));
   } catch (err) {
     return fail(c, `Failed to update order: ${err.message}`, 500);
   }
