@@ -85,6 +85,7 @@ appBanners.post('/', authMiddleware, requireAdmin, async (c) => {
       image,
       ctaText,
       ctaLink,
+      // Existing fields
       gradientStart = '#EC4899',
       gradientEnd = '#F43F5E',
       bgColor,
@@ -93,6 +94,17 @@ appBanners.post('/', authMiddleware, requireAdmin, async (c) => {
       isActive = true,
       startDate,
       endDate,
+      // ✅ NEW FIELDS — Text styling
+      textSize = 'medium',
+      textWeight = 'bold',
+      textOpacity = 1.0,
+      textPosition = 'center-left',
+      textShadow = 0,
+      // ✅ NEW FIELDS — Image styling
+      imagePosition = 'right',
+      imageSize = 'medium',
+      // ✅ NEW FIELD — Layout
+      layout = 'gradient',
     } = body;
 
     if (!title && !image) {
@@ -105,14 +117,20 @@ appBanners.post('/', authMiddleware, requireAdmin, async (c) => {
       `INSERT INTO app_banners 
         (id, type, title, subtitle, description, emoji, image, cta_text, cta_link,
          gradient_start, gradient_end, bg_color, text_color, order_index, is_active,
-         start_date, end_date, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
+         start_date, end_date, 
+         text_size, text_weight, text_opacity, text_position, text_shadow,
+         image_position, image_size, layout,
+         created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
     ).bind(
       id, type, title || null, subtitle || null, description || null,
       emoji || null, image || null, ctaText || null, ctaLink || null,
       gradientStart, gradientEnd, bgColor || null, textColor,
       parseInt(orderIndex) || 0, isActive ? 1 : 0,
-      startDate || null, endDate || null
+      startDate || null, endDate || null,
+      textSize, textWeight, parseFloat(textOpacity) || 1.0, textPosition,
+      parseInt(textShadow) || 0,
+      imagePosition, imageSize, layout
     ).run();
 
     const created = await c.env.DB.prepare(
@@ -153,6 +171,15 @@ appBanners.put('/:id', authMiddleware, requireAdmin, async (c) => {
       is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : existing.is_active,
       start_date: body.startDate !== undefined ? body.startDate : existing.start_date,
       end_date: body.endDate !== undefined ? body.endDate : existing.end_date,
+      // ✅ NEW FIELDS
+      text_size: body.textSize ?? existing.text_size ?? 'medium',
+      text_weight: body.textWeight ?? existing.text_weight ?? 'bold',
+      text_opacity: body.textOpacity !== undefined ? parseFloat(body.textOpacity) : (existing.text_opacity ?? 1.0),
+      text_position: body.textPosition ?? existing.text_position ?? 'center-left',
+      text_shadow: body.textShadow !== undefined ? parseInt(body.textShadow) : (existing.text_shadow ?? 0),
+      image_position: body.imagePosition ?? existing.image_position ?? 'right',
+      image_size: body.imageSize ?? existing.image_size ?? 'medium',
+      layout: body.layout ?? existing.layout ?? 'gradient',
     };
 
     await c.env.DB.prepare(
@@ -160,13 +187,19 @@ appBanners.put('/:id', authMiddleware, requireAdmin, async (c) => {
         type = ?, title = ?, subtitle = ?, description = ?, emoji = ?, image = ?,
         cta_text = ?, cta_link = ?, gradient_start = ?, gradient_end = ?,
         bg_color = ?, text_color = ?, order_index = ?, is_active = ?,
-        start_date = ?, end_date = ?, updated_at = datetime('now')
+        start_date = ?, end_date = ?,
+        text_size = ?, text_weight = ?, text_opacity = ?, text_position = ?, text_shadow = ?,
+        image_position = ?, image_size = ?, layout = ?,
+        updated_at = datetime('now')
        WHERE id = ?`
     ).bind(
       merged.type, merged.title, merged.subtitle, merged.description, merged.emoji, merged.image,
       merged.cta_text, merged.cta_link, merged.gradient_start, merged.gradient_end,
       merged.bg_color, merged.text_color, merged.order_index, merged.is_active,
-      merged.start_date, merged.end_date, id
+      merged.start_date, merged.end_date,
+      merged.text_size, merged.text_weight, merged.text_opacity, merged.text_position, merged.text_shadow,
+      merged.image_position, merged.image_size, merged.layout,
+      id
     ).run();
 
     const updated = await c.env.DB.prepare(
