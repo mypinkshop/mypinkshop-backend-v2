@@ -140,7 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_banners_active ON banners(active);
 CREATE INDEX IF NOT EXISTS idx_banners_order  ON banners(sort_order);
 
 /* ----------------------------------------------------------------------- */
-/* ✅ APP BANNERS (MOBILE APP ONLY — NEW)                                    */
+/* ✅ APP BANNERS (MOBILE APP ONLY)                                          */
 /* ----------------------------------------------------------------------- */
 CREATE TABLE IF NOT EXISTS app_banners (
   id              TEXT PRIMARY KEY,
@@ -303,20 +303,50 @@ CREATE INDEX IF NOT EXISTS idx_coupons_code   ON coupons(code);
 CREATE INDEX IF NOT EXISTS idx_coupons_active ON coupons(is_active);
 
 /* ----------------------------------------------------------------------- */
-/* notifications                                                             */
+/* notifications (upgraded — batch support)                                  */
 /* ----------------------------------------------------------------------- */
-CREATE TABLE IF NOT EXISTS notifications (
-  id            TEXT PRIMARY KEY,
-  user_id       TEXT NOT NULL REFERENCES users(id),
-  title         TEXT NOT NULL,
-  message       TEXT NOT NULL,
-  type          TEXT NOT NULL DEFAULT 'system',
-  is_read       INTEGER NOT NULL DEFAULT 0,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+
+-- ✅ Batch metadata (admin ke liye master record)
+CREATE TABLE IF NOT EXISTS notification_batches (
+  id                TEXT PRIMARY KEY,
+  title             TEXT NOT NULL,
+  message           TEXT NOT NULL,
+  type              TEXT NOT NULL DEFAULT 'system',
+  target_type       TEXT NOT NULL DEFAULT 'all'
+                       CHECK (target_type IN ('all', 'specific', 'segment')),
+  target_user_id    TEXT,
+  target_filter     TEXT,
+  image_url         TEXT,
+  action_url        TEXT,
+  sent_by           TEXT REFERENCES users(id),
+  recipient_count   INTEGER DEFAULT 0,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
-CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications(is_read);
+CREATE INDEX IF NOT EXISTS idx_batches_created  ON notification_batches(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_batches_sent_by  ON notification_batches(sent_by);
+
+-- ✅ Delivery records (har user ka apna)
+CREATE TABLE IF NOT EXISTS notifications (
+  id                TEXT PRIMARY KEY,
+  batch_id          TEXT REFERENCES notification_batches(id) ON DELETE CASCADE,
+  user_id           TEXT NOT NULL REFERENCES users(id),
+  title             TEXT NOT NULL,
+  message           TEXT NOT NULL,
+  type              TEXT NOT NULL DEFAULT 'system',
+  image_url         TEXT,
+  action_url        TEXT,
+  is_read           INTEGER NOT NULL DEFAULT 0,
+  read_at           TEXT,
+  deleted_by_user   INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id     ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_batch_id    ON notifications(batch_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_is_read     ON notifications(is_read);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications(user_id, is_read, deleted_by_user);
+CREATE INDEX IF NOT EXISTS idx_notifications_created_at  ON notifications(created_at DESC);
 
 /* ----------------------------------------------------------------------- */
 /* otp_verifications                                                         */
