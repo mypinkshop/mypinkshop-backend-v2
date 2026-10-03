@@ -1,5 +1,6 @@
 // src/routes/amazonImporter.js
 import { Hono } from 'hono';
+import { uploadImagesToR2 } from '../lib/imageUpload.js';   // ✅ NEW
 
 const amazonImporter = new Hono();
 
@@ -59,7 +60,6 @@ const parseProductFromHtml = (html) => {
     extract(html, /<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i) ||
     extract(html, /<title>([^<|]+)/i);
 
-  // Clean name
   name = name
     .replace(/Amazon\.in\s*:?/gi, '')
     .replace(/\s*:\s*Amazon\.[a-z]+/gi, '')
@@ -109,13 +109,11 @@ const parseProductFromHtml = (html) => {
   for (const pattern of imagePatterns) {
     let m;
     while ((m = pattern.exec(html)) !== null && images.length < 5) {
-      // Clean image URL (remove size suffix)
       let img = m[1]
         .replace(/\._[A-Z0-9_,]+_\./gi, '.')
         .replace(/_\.jpg$/i, '.jpg')
         .replace(/\._\.jpg$/i, '.jpg');
 
-      // Convert to high-res if it's a thumbnail
       img = img.replace(/\.[A-Z0-9_]+\.jpg$/i, '.jpg');
 
       if (!images.includes(img)) {
@@ -129,7 +127,6 @@ const parseProductFromHtml = (html) => {
   const description = [];
   const seen = new Set();
 
-  // Strategy 1: feature-bullets li
   const featureBulletRegex = /<div[^>]*id=["']feature-bullets["'][^>]*>[\s\S]*?<\/div>/i;
   const featureSection = html.match(featureBulletRegex);
   if (featureSection) {
@@ -144,7 +141,6 @@ const parseProductFromHtml = (html) => {
     }
   }
 
-  // Strategy 2: Fallback - any a-list-item span
   if (description.length === 0) {
     const liRegex = /<span[^>]*class=["'][^"']*a-list-item[^"']*["'][^>]*>([^<]{15,})<\/span>/gi;
     let m;
@@ -161,7 +157,6 @@ const parseProductFromHtml = (html) => {
     }
   }
 
-  // Strategy 3: Meta description fallback
   if (description.length === 0) {
     const metaDesc = extract(html, /<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)/i);
     if (metaDesc && metaDesc.length > 20) {
@@ -211,7 +206,6 @@ amazonImporter.post('/amazon', async (c) => {
       );
     }
 
-    // ---------- CLEAN URL (use short form for best results) ----------
     const domain = trimmedUrl.match(/amazon\.(in|com|co\.uk|de|fr|ca)/i)[1];
     const cleanUrl = `https://www.amazon.${domain}/dp/${asin}`;
 
@@ -219,7 +213,6 @@ amazonImporter.post('/amazon', async (c) => {
     let html = '';
     let fetchError = null;
 
-    // STRATEGY 1: Direct fetch with rotating user agents
     const userAgents = [
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -250,7 +243,6 @@ amazonImporter.post('/amazon', async (c) => {
       if (directResponse.ok) {
         const fetchedHtml = await directResponse.text();
 
-        // Check if we got a real product page (not captcha/blocked)
         const isCaptcha = /captcha|robot check|api-services-support@amazon|enter the characters you see/i.test(fetchedHtml);
         const isRealProduct = fetchedHtml.includes('productTitle') || fetchedHtml.includes('landingImage') || fetchedHtml.includes('feature-bullets');
 
@@ -268,7 +260,7 @@ amazonImporter.post('/amazon', async (c) => {
       fetchError = `Fetch failed: ${err.message}`;
     }
 
-    // STRATEGY 2: ScraperAPI fallback (agar env var set hai)
+    // STRATEGY 2: ScraperAPI fallback
     if (!html && c.env.SCRAPER_API_KEY) {
       try {
         const scraperUrl = `https://api.scraperapi.com/?api_key=${c.env.SCRAPER_API_KEY}&url=${encodeURIComponent(cleanUrl)}&country_code=in&render=false`;
@@ -312,6 +304,37 @@ amazonImporter.post('/amazon', async (c) => {
       );
     }
 
+    // ============================================
+    // ✅ NEW: Amazon images → R2 upload
+    // ============================================
+    let finalImages = parsed.images || [];
+
+    if (finalImages.length > 0) {
+      if (!c.env.IMAGES_BUCKET) {
+        console.warn('[R2] IMAGES_BUCKET binding missing — using Amazon URLs');
+      } else {
+        try {
+          const tempId = `amz_${asin}_${Date.now()}`;
+          const uploaded = await uploadImagesToR2(c.env, finalImages, tempId);
+          console.log(`[R2] Uploaded ${uploaded.length} images for ASIN ${asin}`);
+
+          // Only replace if at least one image uploaded successfully
+          const successCount = uploaded.filter(
+            (u) => u && !u.includes('amazon.com')
+          ).length;
+
+          if (successCount > 0) {
+            finalImages = uploaded;
+          } else {
+            console.warn('[R2] No images uploaded successfully — using Amazon URLs');
+          }
+        } catch (err) {
+          console.error('[R2] Upload batch failed:', err.message);
+          // keep original Amazon URLs as fallback
+        }
+      }
+    }
+
     // ---------- RESPONSE ----------
     return c.json({
       success: true,
@@ -320,7 +343,7 @@ amazonImporter.post('/amazon', async (c) => {
         brand: parsed.brand || '',
         price: parsed.price || 0,
         originalPrice: parsed.originalPrice || parsed.price || 0,
-        images: parsed.images.length > 0 ? parsed.images : [],
+        images: finalImages,   // ✅ R2 URLs (or Amazon fallback)
         description: parsed.description,
         keyFeatures: parsed.keyFeatures,
         rating: parsed.rating,
