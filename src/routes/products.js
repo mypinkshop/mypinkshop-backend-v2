@@ -344,6 +344,7 @@ products.get('/', async (c) => {
           ELSE 0 
         END DESC, rating DESC`;
     }
+    else if (sort === 'random') orderClause = 'ORDER BY RANDOM()';   // ✅ NEW
     else if (sort === 'newest') orderClause = 'ORDER BY created_at DESC';
 
     const listQuery = `SELECT * FROM products ${whereClause} ${orderClause} LIMIT ? OFFSET ?`;
@@ -430,14 +431,12 @@ products.get('/:id/related', async (c) => {
 
     if (!product) return fail(c, 'Product not found.', 404);
 
-    // 1. Same category (related)
     const { results: related } = await c.env.DB.prepare(
       `SELECT * FROM products 
        WHERE main_category = ? AND id != ? AND is_active = 1 AND stock > 0
        ORDER BY RANDOM() LIMIT 8`
     ).bind(product.main_category, id).all();
 
-    // 2. Same brand
     let sameBrand = [];
     if (product.brand && product.brand.trim()) {
       const { results } = await c.env.DB.prepare(
@@ -448,7 +447,6 @@ products.get('/:id/related', async (c) => {
       sameBrand = results || [];
     }
 
-    // 3. Customers also viewed (random)
     const { results: alsoViewed } = await c.env.DB.prepare(
       `SELECT * FROM products 
        WHERE id != ? AND is_active = 1 AND stock > 0
