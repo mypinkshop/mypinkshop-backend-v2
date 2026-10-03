@@ -7,6 +7,11 @@ binding = "DB"
 database_name = "mypinkshop-db"
 database_id = "00343abb-2eb1-4010-84a5-f5608523de3d"
 
+# R2 bucket for product images
+[[r2_buckets]]
+binding = "IMAGES_BUCKET"
+bucket_name = "mypinkshop-images"
+
 # ⚠️ SECURITY FIX: JWT_SECRET and any password/API-key style values must
 # NEVER live in [vars] because wrangler.toml is committed to git in plain
 # text — anyone with repo access (or who finds this on GitHub) could forge
