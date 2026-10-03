@@ -1,5 +1,7 @@
 // src/lib/imageUpload.js
 
+const R2_PUBLIC_URL = 'https://pub-845f68571d2b4c4b9ea02fb8f6162582.r2.dev';
+
 /**
  * Amazon image URL → download → R2 upload → return public URL
  */
@@ -7,7 +9,6 @@ export async function uploadImageToR2(env, amazonUrl, productId, index = 0) {
   if (!amazonUrl || !env.IMAGES_BUCKET) return amazonUrl;
 
   try {
-    // 1. Amazon se image download
     const res = await fetch(amazonUrl, {
       headers: {
         'User-Agent':
@@ -30,23 +31,20 @@ export async function uploadImageToR2(env, amazonUrl, productId, index = 0) {
       ? 'webp'
       : 'jpg';
 
-    // 2. Unique filename
     const safeProductId = String(productId || 'unknown').replace(/[^a-z0-9_-]/gi, '');
     const filename = `products/${safeProductId}/${Date.now()}-${index}.${ext}`;
 
-    // 3. R2 upload
     await env.IMAGES_BUCKET.put(filename, buffer, {
-      httpMetadata: { contentType, cacheControl: 'public, max-age=31536000' },
+      httpMetadata: {
+        contentType,
+        cacheControl: 'public, max-age=31536000, immutable',
+      },
     });
 
-    // 4. Public URL
-    // Option A: R2.dev subdomain
-    // return `https://pub-XXXXXXXX.r2.dev/${filename}`;
-    // Option B: custom domain (recommended)
-    return `https://images.mypinkshop.com/${filename}`;
+    return `${R2_PUBLIC_URL}/${filename}`;
   } catch (err) {
     console.error('[R2] uploadImageToR2 error:', err);
-    return amazonUrl; // fallback: original
+    return amazonUrl;
   }
 }
 
